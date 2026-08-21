@@ -46,6 +46,16 @@ MAX_FILESIZE_MB = int(os.environ.get("MAX_FILESIZE_MB", "1900"))
 AUDD_API_TOKEN = os.environ.get("AUDD_API_TOKEN", "").strip()
 AUDD_URL = "https://api.audd.io/"
 
+# YouTube serverlardan (Railway kabi) kelgan so'rovlarni tez-tez blokladi
+# ("Sign in to confirm you're not a bot"). Buni aylanib o'tish uchun haqiqiy
+# YouTube hisobidan eksport qilingan cookies (Netscape formatida, to'liq matn)
+# shu o'zgaruvchiga joylashtiriladi. Bo'sh bo'lsa, cookie'siz urinib ko'radi
+# (ba'zi videolar baribir ishlashi mumkin).
+YOUTUBE_COOKIES_CONTENT = os.environ.get("YOUTUBE_COOKIES", "").strip()
+YOUTUBE_COOKIES_FILE = Path(tempfile.gettempdir()) / "youtube_cookies.txt"
+if YOUTUBE_COOKIES_CONTENT:
+    YOUTUBE_COOKIES_FILE.write_text(YOUTUBE_COOKIES_CONTENT, encoding="utf-8")
+
 DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "media_bot_downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -124,6 +134,8 @@ def download_media(url: str, user_id: str) -> dict:
         "restrictfilenames": True,
         "extractor_args": YOUTUBE_EXTRACTOR_ARGS,
     }
+    if YOUTUBE_COOKIES_CONTENT:
+        ydl_opts["cookiefile"] = str(YOUTUBE_COOKIES_FILE)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -170,6 +182,8 @@ def download_audio_by_query(query: str, user_id: str) -> dict:
         "no_warnings": True,
         "restrictfilenames": True,
     }
+    if YOUTUBE_COOKIES_CONTENT:
+        ydl_opts["cookiefile"] = str(YOUTUBE_COOKIES_FILE)
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(f"ytsearch1:{query}", download=True)
@@ -450,6 +464,15 @@ def build_application() -> Application:
         logger.warning(
             "AUDD_API_TOKEN sozlanmagan — audio/video fayl orqali musiqa "
             "tanish funksiyasi o'chiq turadi."
+        )
+
+    if YOUTUBE_COOKIES_CONTENT:
+        logger.info("YouTube cookies topildi — bot login sessiyasi bilan ishlaydi.")
+    else:
+        logger.warning(
+            "YOUTUBE_COOKIES sozlanmagan — YouTube ba'zi videolarni "
+            "\"Sign in to confirm you're not a bot\" deb bloklashi mumkin. "
+            "DEPLOY.md dagi yo'riqnomaga qarang."
         )
 
     return builder.build()
