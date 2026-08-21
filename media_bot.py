@@ -32,25 +32,16 @@ from telegram.request import HTTPXRequest
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 # Local Bot API server manzili, masalan: telegram-api.railway.internal:8081
-# Bo'sh qoldirilsa, oddiy (bulutli) api.telegram.org ishlatiladi — bu holda
-# 50 MB dan katta fayllar yuborilmaydi.
 LOCAL_API_HOST = os.environ.get("LOCAL_API_HOST", "").strip()
 
-# Xavfsizlik chegarasi — Telegram local server 2000 MB (2 GB) ga ruxsat
-# beradi, biz ehtiyot shart sifatida biroz pastroq chegara qo'yamiz.
+# Xavfsizlik chegarasi — Telegram local server 2000 MB (2 GB) ga ruxsat beradi
 MAX_FILESIZE_MB = int(os.environ.get("MAX_FILESIZE_MB", "1900"))
 
-# Musiqani audio/video fayl orqali tanib olish uchun AudD.io API kaliti.
-# dashboard.audd.io orqali bepul olinadi. Bo'sh bo'lsa, bu funksiya o'chiq
-# turadi (boshqa hammasi ishlayveradi).
+# Musiqani audio/video fayl orqali tanib olish uchun AudD.io API kaliti
 AUDD_API_TOKEN = os.environ.get("AUDD_API_TOKEN", "").strip()
 AUDD_URL = "https://api.audd.io/"
 
-# YouTube serverlardan (Railway kabi) kelgan so'rovlarni tez-tez blokladi
-# ("Sign in to confirm you're not a bot"). Buni aylanib o'tish uchun haqiqiy
-# YouTube hisobidan eksport qilingan cookies (Netscape formatida, to'liq matn)
-# shu o'zgaruvchiga joylashtiriladi. Bo'sh bo'lsa, cookie'siz urinib ko'radi
-# (ba'zi videolar baribir ishlashi mumkin).
+# YouTube cookies sozlamasi
 YOUTUBE_COOKIES_CONTENT = os.environ.get("YOUTUBE_COOKIES", "").strip()
 YOUTUBE_COOKIES_FILE = Path(tempfile.gettempdir()) / "youtube_cookies.txt"
 if YOUTUBE_COOKIES_CONTENT:
@@ -72,10 +63,12 @@ PLATFORM_NAMES = {
     "tiktok.com": "TikTok",
 }
 
-# YouTube'ning "Sign in to confirm you're not a bot" bloklashini kamaytirish
-# uchun turli mijoz (client) turlarini sinab ko'ramiz — bu keng tarqalgan,
-# rasmiy yt-dlp tavsiya etadigan usul.
-YOUTUBE_EXTRACTOR_ARGS = {"youtube": {"player_client": ["ios", "android", "web"]}}
+# YouTube bot blokirovkasini kamaytirish uchun turli mijoz turlari
+YOUTUBE_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": ["android", "ios", "mweb", "tv"],
+    }
+}
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -114,18 +107,13 @@ def build_caption(title: str, uploader: str, duration) -> str:
 # ==================== YUKLAB OLISH (yt-dlp) ====================
 
 def download_media(url: str, user_id: str) -> dict:
-    """Havoladan video/rasmni yuklab oladi. Natija: path/type/title/uploader/duration.
-
-    Bloklovchi (sinxron) funksiya — asyncio.to_thread orqali chaqiriladi.
-    """
+    """Havoladan video/rasmni yuklab oladi. Natija: path/type/title/uploader/duration."""
     outtmpl = str(DOWNLOAD_DIR / f"{user_id}_%(id)s.%(ext)s")
 
     ydl_opts = {
         "outtmpl": outtmpl,
-        "format": (
-            f"bestvideo[filesize<{MAX_FILESIZE_MB}M]+bestaudio/"
-            f"best[filesize<{MAX_FILESIZE_MB}M]/best"
-        ),
+        # Formatdagi filesize filtri olib tashlandi (xatoni yo'qotadi)
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "merge_output_format": "mp4",
         "max_filesize": MAX_FILESIZE_MB * 1024 * 1024,
         "noplaylist": True,
@@ -162,10 +150,7 @@ def download_media(url: str, user_id: str) -> dict:
 
 
 def download_audio_by_query(query: str, user_id: str) -> dict:
-    """Nom bo'yicha YouTube'dan qidirib, audio (mp3) formatda yuklab oladi.
-
-    Bloklovchi (sinxron) funksiya — asyncio.to_thread orqali chaqiriladi.
-    """
+    """Nom bo'yicha YouTube'dan qidirib, audio (mp3) formatda yuklab oladi."""
     outtmpl = str(DOWNLOAD_DIR / f"{user_id}_search_%(id)s.%(ext)s")
 
     ydl_opts = {
@@ -187,11 +172,11 @@ def download_audio_by_query(query: str, user_id: str) -> dict:
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(f"ytsearch1:{query}", download=True)
-        if "entries" in info:
+        if "entries" in info and info["entries"]:
             info = info["entries"][0]
+
         filepath = ydl.prepare_filename(info)
 
-        # Audio ekstraktsiyadan keyin kengaytma .mp3 ga o'zgaradi.
         base = os.path.splitext(filepath)[0]
         mp3_path = f"{base}.mp3"
         if os.path.exists(mp3_path):
