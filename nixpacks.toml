@@ -1,5 +1,0 @@
-# Railway (Nixpacks) uchun: yt-dlp video va audio oqimlarini birlashtirish
-# uchun ffmpeg dasturidan foydalanadi, shuning uchun uni build vaqtida
-# o'rnatishimiz kerak.
-[phases.setup]
-aptPkgs = ["ffmpeg"]
