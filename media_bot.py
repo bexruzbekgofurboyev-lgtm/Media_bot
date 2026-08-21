@@ -1,6 +1,7 @@
 """
 Ijtimoiy tarmoqlardan (Instagram, YouTube, Facebook, X, TikTok) video va rasm
-yuklab beruvchi Telegram bot.
+yuklab beruvchi, shuningdek musiqani nomi bo'yicha yoki audio/video fayl
+orqali (Shazam kabi) topib beruvchi Telegram bot.
 
 Katta hajmli fayllarni (2 GB gacha) yuborish uchun bu bot LOCAL Telegram Bot
 API serveriga ulanadi (oddiy api.telegram.org emas). Local server sozlash
@@ -14,6 +15,7 @@ import tempfile
 import asyncio
 from pathlib import Path
 
+import requests
 import yt_dlp
 from telegram import Update
 from telegram.ext import (
@@ -38,6 +40,12 @@ LOCAL_API_HOST = os.environ.get("LOCAL_API_HOST", "").strip()
 # beradi, biz ehtiyot shart sifatida biroz pastroq chegara qo'yamiz.
 MAX_FILESIZE_MB = int(os.environ.get("MAX_FILESIZE_MB", "1900"))
 
+# Musiqani audio/video fayl orqali tanib olish uchun AudD.io API kaliti.
+# dashboard.audd.io orqali bepul olinadi. Bo'sh bo'lsa, bu funksiya o'chiq
+# turadi (boshqa hammasi ishlayveradi).
+AUDD_API_TOKEN = os.environ.get("AUDD_API_TOKEN", "").strip()
+AUDD_URL = "https://api.audd.io/"
+
 DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "media_bot_downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -54,6 +62,11 @@ PLATFORM_NAMES = {
     "tiktok.com": "TikTok",
 }
 
+# YouTube'ning "Sign in to confirm you're not a bot" bloklashini kamaytirish
+# uchun turli mijoz (client) turlarini sinab ko'ramiz — bu keng tarqalgan,
+# rasmiy yt-dlp tavsiya etadigan usul.
+YOUTUBE_EXTRACTOR_ARGS = {"youtube": {"player_client": ["ios", "android", "web"]}}
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -68,13 +81,32 @@ def detect_platform(url: str) -> str:
     return "Noma'lum manba"
 
 
+def format_duration(seconds) -> str:
+    if not seconds:
+        return "N/A"
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def build_caption(title: str, uploader: str, duration) -> str:
+    uploader_display = uploader if uploader else "Noma'lum"
+    return (
+        f"🎬 {title}\n"
+        f"👤 {uploader_display}\n"
+        f"⏱ {format_duration(duration)}"
+    )
+
+
 # ==================== YUKLAB OLISH (yt-dlp) ====================
 
 def download_media(url: str, user_id: str) -> dict:
-    """yt-dlp orqali videoni/rasmni yuklab oladi. Natija: {"path", "type", "title"}.
+    """Havoladan video/rasmni yuklab oladi. Natija: path/type/title/uploader/duration.
 
-    Bu funksiya bloklovchi (sinxron) — asosiy event loop'ni band qilmaslik
-    uchun uni alohida thread'da chaqirish kerak (asyncio.to_thread orqali).
+    Bloklovchi (sinxron) funksiya — asyncio.to_thread orqali chaqiriladi.
     """
     outtmpl = str(DOWNLOAD_DIR / f"{user_id}_%(id)s.%(ext)s")
 
@@ -90,13 +122,13 @@ def download_media(url: str, user_id: str) -> dict:
         "quiet": True,
         "no_warnings": True,
         "restrictfilenames": True,
+        "extractor_args": YOUTUBE_EXTRACTOR_ARGS,
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filepath = ydl.prepare_filename(info)
 
-        # Video+audio birlashtirilganda kengaytma o'zgargan bo'lishi mumkin.
         if not os.path.exists(filepath):
             base = os.path.splitext(filepath)[0]
             for ext in ("mp4", "mkv", "webm", "jpg", "jpeg", "png", "webp"):
@@ -112,18 +144,131 @@ def download_media(url: str, user_id: str) -> dict:
             "path": filepath,
             "type": media_type,
             "title": info.get("title") or "Media",
+            "uploader": info.get("uploader") or "Noma'lum",
+            "duration": info.get("duration"),
         }
+
+
+def download_audio_by_query(query: str, user_id: str) -> dict:
+    """Nom bo'yicha YouTube'dan qidirib, audio (mp3) formatda yuklab oladi.
+
+    Bloklovchi (sinxron) funksiya — asyncio.to_thread orqali chaqiriladi.
+    """
+    outtmpl = str(DOWNLOAD_DIR / f"{user_id}_search_%(id)s.%(ext)s")
+
+    ydl_opts = {
+        "outtmpl": outtmpl,
+        "format": "bestaudio/best",
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }],
+        "extractor_args": YOUTUBE_EXTRACTOR_ARGS,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "restrictfilenames": True,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+        if "entries" in info:
+            info = info["entries"][0]
+        filepath = ydl.prepare_filename(info)
+
+        # Audio ekstraktsiyadan keyin kengaytma .mp3 ga o'zgaradi.
+        base = os.path.splitext(filepath)[0]
+        mp3_path = f"{base}.mp3"
+        if os.path.exists(mp3_path):
+            filepath = mp3_path
+
+        return {
+            "path": filepath,
+            "type": "audio",
+            "title": info.get("title") or "Musiqa",
+            "uploader": info.get("uploader") or "Noma'lum",
+            "duration": info.get("duration"),
+        }
+
+
+# ==================== MUSIQANI TANIB OLISH (AudD.io) ====================
+
+def recognize_song(filepath: str) -> dict:
+    """AudD.io orqali fayldagi musiqani tanib oladi. Topilmasa None qaytaradi."""
+    with open(filepath, "rb") as f:
+        response = requests.post(
+            AUDD_URL,
+            data={"api_token": AUDD_API_TOKEN, "return": "apple_music,spotify"},
+            files={"file": f},
+            timeout=60,
+        )
+    response.raise_for_status()
+    data = response.json()
+    return data.get("result")
+
+
+# ==================== YORDAMCHI: NATIJANI YUBORISH ====================
+
+async def send_download_result(message, status_msg, result: dict) -> None:
+    """Yuklab olingan video/rasm/audio faylni yuboradi va vaqtinchalik faylni tozalaydi."""
+    filepath = result["path"]
+    try:
+        file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+
+        if file_size_mb > MAX_FILESIZE_MB:
+            await status_msg.edit_text(f"❌ Fayl juda katta ({file_size_mb:.0f} MB), yubora olmayman.")
+            return
+
+        caption = build_caption(result["title"], result.get("uploader"), result.get("duration"))
+        duration = result.get("duration")
+
+        await status_msg.edit_text(f"📤 Yuborilmoqda... ({file_size_mb:.1f} MB)")
+
+        with open(filepath, "rb") as f:
+            if result["type"] == "photo":
+                await message.reply_chat_action("upload_photo")
+                await message.reply_photo(photo=f, caption=caption)
+            elif result["type"] == "audio":
+                await message.reply_chat_action("upload_voice")
+                await message.reply_audio(
+                    audio=f,
+                    caption=caption,
+                    title=result["title"][:64],
+                    performer=(result.get("uploader") or "")[:64],
+                    duration=int(duration) if duration else None,
+                    write_timeout=1800,
+                    read_timeout=1800,
+                )
+            else:
+                await message.reply_chat_action("upload_video")
+                await message.reply_video(
+                    video=f,
+                    caption=caption,
+                    supports_streaming=True,
+                    write_timeout=1800,
+                    read_timeout=1800,
+                )
+
+        await status_msg.delete()
+    finally:
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
 
 
 # ==================== TELEGRAM BUYRUQLARI ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
-        "Salom! 👋 Men Instagram, YouTube, Facebook, X (Twitter) va TikTok'dan "
-        "video/rasm yuklab beruvchi botman.\n\n"
-        "📎 Shunchaki video havolasini (link) menga yuboring — yuklab olib, "
-        "shu yerga jo'nataman.\n\n"
-        f"📦 Maksimal fayl hajmi: {MAX_FILESIZE_MB} MB\n\n"
+        "Salom! 👋 Men video/musiqa yuklab beruvchi va topib beruvchi botman.\n\n"
+        "📎 Instagram, YouTube, Facebook, X yoki TikTok havolasini yuboring — "
+        "video/rasmni yuklab beraman.\n\n"
+        "🎵 Qo'shiq nomini yozing (masalan \"Dildora Sevgi\") — men uni topib, "
+        "audio qilib yuboraman.\n\n"
+        "🎧 Audio, video yoki ovozli xabar yuboring — undagi musiqani tanib, "
+        "sifatli faylini topib beraman.\n\n"
         "⚠️ Eslatma: faqat mualliflik huquqi ruxsat bergan yoki shaxsiy "
         "foydalanish uchun kontentni yuklab oling."
     )
@@ -136,15 +281,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
-    match = URL_PATTERN.search(text)
-    if not match:
-        await update.message.reply_text(
-            "Iltimos, video havolasini (link) yuboring. Masalan: "
-            "https://www.instagram.com/reel/..."
-        )
-        return
-
-    url = match.group(0)
+    url = URL_PATTERN.search(text).group(0)
     user_id = str(update.effective_user.id)
     platform = detect_platform(url)
 
@@ -156,8 +293,12 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except yt_dlp.utils.DownloadError as e:
         error_text = str(e)
         if "max-filesize" in error_text.lower() or "file is larger" in error_text.lower():
+            await status_msg.edit_text(f"❌ Fayl {MAX_FILESIZE_MB} MB dan katta, yubora olmayman.")
+        elif "sign in" in error_text.lower() or "confirm" in error_text.lower():
             await status_msg.edit_text(
-                f"❌ Fayl {MAX_FILESIZE_MB} MB dan katta, yubora olmayman."
+                "❌ YouTube hozircha bu videoni berishni istamayapti (botlarga qarshi "
+                "himoya). Boshqa video bilan urinib ko'ring yoki birozdan so'ng qayta "
+                "urinib ko'ring."
             )
         else:
             await status_msg.edit_text(
@@ -171,40 +312,111 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status_msg.edit_text("❌ Kutilmagan xato yuz berdi. Qayta urinib ko'ring.")
         return
 
-    filepath = result["path"]
+    await send_download_result(update.message, status_msg, result)
+
+
+async def handle_text_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Havola bo'lmagan matnli xabarni musiqa qidiruvi sifatida qayta ishlaydi."""
+    query = (update.message.text or "").strip()
+    if not query:
+        return
+
+    user_id = str(update.effective_user.id)
+    status_msg = await update.message.reply_text(f"🔍 Qidirilmoqda: {query}")
+    await update.message.reply_chat_action("upload_voice")
+
     try:
-        file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
-
-        if file_size_mb > MAX_FILESIZE_MB:
-            await status_msg.edit_text(
-                f"❌ Fayl juda katta ({file_size_mb:.0f} MB), yubora olmayman."
-            )
-            return
-
-        await status_msg.edit_text(f"📤 Yuborilmoqda... ({file_size_mb:.1f} MB)")
-        await update.message.reply_chat_action(
-            "upload_photo" if result["type"] == "photo" else "upload_video"
+        result = await asyncio.to_thread(download_audio_by_query, query, user_id)
+    except yt_dlp.utils.DownloadError as e:
+        logger.error(f"Qidiruv xatosi: {str(e)[:500]}")
+        await status_msg.edit_text(
+            "❌ Topilmadi yoki yuklab bo'lmadi. Boshqa nom bilan urinib ko'ring, "
+            "yoki to'g'ridan-to'g'ri video havolasini yuboring."
         )
+        return
+    except Exception as e:
+        logger.error(f"Kutilmagan xato: {e}")
+        await status_msg.edit_text("❌ Kutilmagan xato yuz berdi. Qayta urinib ko'ring.")
+        return
 
-        with open(filepath, "rb") as f:
-            if result["type"] == "photo":
-                await update.message.reply_photo(photo=f, caption=result["title"][:1024])
-            else:
-                await update.message.reply_video(
-                    video=f,
-                    caption=result["title"][:1024],
-                    supports_streaming=True,
-                    write_timeout=1800,
-                    read_timeout=1800,
-                )
+    await send_download_result(update.message, status_msg, result)
 
-        await status_msg.delete()
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text or ""
+    if URL_PATTERN.search(text):
+        await handle_link(update, context)
+    else:
+        await handle_text_search(update, context)
+
+
+async def handle_media_recognition(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Yuborilgan audio/video/ovozli xabardagi musiqani AudD.io orqali tanib, topib beradi."""
+    if not AUDD_API_TOKEN:
+        await update.message.reply_text(
+            "🎧 Musiqani fayl orqali tanish funksiyasi hali sozlanmagan "
+            "(AUDD_API_TOKEN yo'q). Administrator DEPLOY.md ga qarasin."
+        )
+        return
+
+    message = update.message
+    tg_file = None
+    if message.voice:
+        tg_file = await message.voice.get_file()
+    elif message.audio:
+        tg_file = await message.audio.get_file()
+    elif message.video_note:
+        tg_file = await message.video_note.get_file()
+    elif message.video:
+        tg_file = await message.video.get_file()
+    elif message.document and message.document.mime_type and (
+        message.document.mime_type.startswith("audio/")
+        or message.document.mime_type.startswith("video/")
+    ):
+        tg_file = await message.document.get_file()
+
+    if tg_file is None:
+        return
+
+    user_id = str(update.effective_user.id)
+    status_msg = await message.reply_text("🎧 Musiqa aniqlanmoqda...")
+
+    local_path = DOWNLOAD_DIR / f"recognize_{user_id}_{tg_file.file_unique_id}"
+    await tg_file.download_to_drive(custom_path=str(local_path))
+
+    try:
+        result = await asyncio.to_thread(recognize_song, str(local_path))
+    except Exception as e:
+        logger.error(f"AudD xatosi: {e}")
+        await status_msg.edit_text("❌ Aniqlashda xato yuz berdi. Qayta urinib ko'ring.")
+        return
     finally:
-        # Vaqtinchalik faylni tozalaymiz — diskni to'ldirmasligi uchun.
         try:
-            os.remove(filepath)
+            os.remove(local_path)
         except OSError:
             pass
+
+    if not result:
+        await status_msg.edit_text("😕 Kechirasiz, bu musiqani aniqlay olmadim.")
+        return
+
+    artist = result.get("artist", "")
+    title = result.get("title", "")
+    query = f"{artist} - {title}".strip(" -") or title or artist
+
+    await status_msg.edit_text(f"🎵 Topildi: {artist} — {title}\n⏳ Yuklab olinmoqda...")
+    await message.reply_chat_action("upload_voice")
+
+    try:
+        download_result = await asyncio.to_thread(download_audio_by_query, query, user_id)
+    except Exception as e:
+        logger.error(f"Audio yuklashda xato: {e}")
+        await status_msg.edit_text(
+            f"🎵 Aniqlandi: {artist} — {title}\nLekin audio faylni yuklab bo'lmadi."
+        )
+        return
+
+    await send_download_result(message, status_msg, download_result)
 
 
 # ==================== ASOSIY FUNKSIYA ====================
@@ -213,7 +425,6 @@ def build_application() -> Application:
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN muhit o'zgaruvchisi topilmadi. DEPLOY.md ni ko'ring.")
 
-    # Katta fayllar yuborish uzoq vaqt olishi mumkin — timeout'larni oshiramiz.
     request = HTTPXRequest(
         connect_timeout=60,
         read_timeout=1800,
@@ -235,6 +446,12 @@ def build_application() -> Application:
             "amalda 50 MB dan katta fayllar yuborilmaydi."
         )
 
+    if not AUDD_API_TOKEN:
+        logger.warning(
+            "AUDD_API_TOKEN sozlanmagan — audio/video fayl orqali musiqa "
+            "tanish funksiyasi o'chiq turadi."
+        )
+
     return builder.build()
 
 
@@ -243,7 +460,12 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(
+        filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE
+        | filters.Document.AUDIO | filters.Document.VIDEO,
+        handle_media_recognition,
+    ))
 
     logger.info("Media bot ishga tushmoqda...")
     app.run_polling()
