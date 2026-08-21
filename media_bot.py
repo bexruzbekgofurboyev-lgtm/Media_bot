@@ -63,10 +63,10 @@ PLATFORM_NAMES = {
     "tiktok.com": "TikTok",
 }
 
-# YouTube bot blokirovkasini kamaytirish uchun turli mijoz turlari
+# YouTube bot blokirovkasini aylanib o'tish uchun maxsus mijozlar
 YOUTUBE_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["android", "ios", "mweb", "tv"],
+        "player_client": ["tv", "creator"],
     }
 }
 
@@ -112,8 +112,8 @@ def download_media(url: str, user_id: str) -> dict:
 
     ydl_opts = {
         "outtmpl": outtmpl,
-        # Formatdagi filesize filtri olib tashlandi (xatoni yo'qotadi)
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        # Har qanday mavjud formatni to'g'ridan-to'g'ri olish uchun format yechimi
+        "format": "b/bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
         "max_filesize": MAX_FILESIZE_MB * 1024 * 1024,
         "noplaylist": True,
@@ -155,7 +155,7 @@ def download_audio_by_query(query: str, user_id: str) -> dict:
 
     ydl_opts = {
         "outtmpl": outtmpl,
-        "format": "bestaudio/best",
+        "format": "ba/ba*/best",
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
