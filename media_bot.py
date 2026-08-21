@@ -66,7 +66,8 @@ PLATFORM_NAMES = {
 # YouTube bot blokirovkasini aylanib o'tish uchun maxsus mijozlar
 YOUTUBE_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["tv", "creator"],
+        "player_client": ["mweb", "tv", "android"],
+        "player_skip": ["webpage", "configs"],
     }
 }
 
