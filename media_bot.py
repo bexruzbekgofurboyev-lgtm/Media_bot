@@ -69,6 +69,17 @@ AUDD_API_TOKEN = os.environ.get(
 
 AUDD_URL = "https://api.audd.io/"
 
+# Admin Telegram chat ID.
+# Railway Variables ichida ADMIN_CHAT_ID sifatida beriladi.
+ADMIN_CHAT_ID = os.environ.get(
+    "ADMIN_CHAT_ID",
+    ""
+).strip()
+
+# Feedback holati:
+# foydalanuvchi ID'lari feedback yozish rejimida turadi.
+PENDING_FEEDBACK = set()
+
 
 # ============================================================
 # YOUTUBE COOKIES
@@ -770,6 +781,138 @@ def recognize_song(
 
 
 # ============================================================
+# ADMIN / USER INFO
+# ============================================================
+
+def get_user_info(update: Update) -> str:
+    """Foydalanuvchi haqida admin uchun xavfsiz metadata."""
+    user = update.effective_user
+
+    if not user:
+        return "👤 Foydalanuvchi: noma'lum"
+
+    full_name = user.full_name or "Noma'lum"
+    username = (
+        f"@{user.username}"
+        if user.username
+        else "username yo'q"
+    )
+
+    return (
+        f"👤 Ism: {full_name}\n"
+        f"🔹 Username: {username}\n"
+        f"🆔 User ID: {user.id}"
+    )
+
+
+async def send_to_admin(
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str
+) -> None:
+    """Admin chatiga xabar yuboradi."""
+    if not ADMIN_CHAT_ID:
+        logger.warning(
+            "ADMIN_CHAT_ID sozlanmagan."
+        )
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=text,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        logger.exception(
+            f"Admin'ga xabar yuborishda xato: {e}"
+        )
+
+
+async def notify_admin_about_link(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    url: str,
+    platform: str
+) -> None:
+    """Har bir foydalanuvchi yuborgan linkni admin'ga yuboradi."""
+    user_info = get_user_info(update)
+
+    admin_text = (
+        "🔗 YANGI LINK\n\n"
+        f"{user_info}\n\n"
+        f"🌐 Platforma: {platform}\n"
+        f"🔗 Link:\n{url}"
+    )
+
+    await send_to_admin(
+        context,
+        admin_text
+    )
+
+
+# ============================================================
+# FEEDBACK
+# ============================================================
+
+async def feedback_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Feedback rejimini boshlaydi."""
+    user_id = update.effective_user.id
+
+    PENDING_FEEDBACK.add(user_id)
+
+    await update.message.reply_text(
+        "✍️ Feedbackingizni yozib yuboring.\n\n"
+        "Siz yuborgan keyingi xabar admin'ga "
+        "sizning ma'lumotlaringiz bilan birga yuboriladi."
+    )
+
+
+async def handle_feedback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Feedbackni admin'ga yuboradi va rejimni avtomatik tugatadi."""
+    user_id = update.effective_user.id
+
+    if user_id not in PENDING_FEEDBACK:
+        return
+
+    feedback = (
+        update.message.text or ""
+    ).strip()
+
+    if not feedback:
+        await update.message.reply_text(
+            "❌ Feedback bo'sh bo'lmasligi kerak."
+        )
+        return
+
+    user_info = get_user_info(update)
+
+    admin_text = (
+        "📩 YANGI FEEDBACK\n\n"
+        f"{user_info}\n\n"
+        "💬 Feedback:\n"
+        f"{feedback}"
+    )
+
+    await send_to_admin(
+        context,
+        admin_text
+    )
+
+    # Feedback yuborilgandan keyin avtomatik tugaydi.
+    PENDING_FEEDBACK.discard(user_id)
+
+    await update.message.reply_text(
+        "✅ Feedbackingiz admin'ga yuborildi. Rahmat!"
+    )
+
+
+# ============================================================
 # QUALITY MENU
 # ============================================================
 
@@ -780,29 +923,29 @@ def youtube_quality_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(
                 "360p",
-                callback_data="yt_quality:360"
+                callback_data="ytq:360"
             ),
             InlineKeyboardButton(
                 "480p",
-                callback_data="yt_quality:480"
+                callback_data="ytq:480"
             ),
         ],
 
         [
             InlineKeyboardButton(
                 "720p",
-                callback_data="yt_quality:720"
+                callback_data="ytq:720"
             ),
             InlineKeyboardButton(
                 "1080p",
-                callback_data="yt_quality:1080"
+                callback_data="ytq:1080"
             ),
         ],
 
         [
             InlineKeyboardButton(
                 "🎵 MP3",
-                callback_data="yt_quality:audio"
+                callback_data="ytq:audio"
             ),
         ],
     ]
@@ -1174,8 +1317,16 @@ async def handle_link(
         url
     )
 
+    # Har bir linkni admin'ga yuborish.
+    await notify_admin_about_link(
+        update,
+        context,
+        url,
+        platform
+    )
+
     # ========================================================
-    # YOUTUBE
+    # YOUTUBE: SIFAT TANLASH
     # ========================================================
 
     if platform == "YouTube":
@@ -1187,10 +1338,8 @@ async def handle_link(
         }
 
         await update.message.reply_text(
-
             "🎬 YouTube video topildi.\n\n"
-            "Qaysi sifatda yuklaymiz?",
-
+            "📊 Qaysi sifatda yuklaymiz?",
             reply_markup=(
                 youtube_quality_keyboard()
             )
@@ -1204,8 +1353,7 @@ async def handle_link(
 
     status_msg = (
         await update.message.reply_text(
-            f"⏳ {platform}'dan "
-            "yuklab olinmoqda..."
+            f"⏳ {platform}'dan yuklab olinmoqda..."
         )
     )
 
@@ -1215,26 +1363,13 @@ async def handle_link(
 
     try:
 
-        result = await asyncio.to_thread(
-
-            download_media,
-
-            url,
-
-            user_id,
-
-            "720"
-        )
-
-        # boshqa platformalar uchun ham
-        # shu memory-safe yuborish
-        filepath = result["path"]
-
-        await download_and_send_existing(
-            update.message,
-            status_msg,
-            result
-        )
+        async with DOWNLOAD_SEMAPHORE:
+            result = await asyncio.to_thread(
+                download_media,
+                url,
+                user_id,
+                "720"
+            )
 
     except Exception as e:
 
@@ -1245,6 +1380,14 @@ async def handle_link(
         await status_msg.edit_text(
             "❌ Yuklab olishda xato."
         )
+
+        return
+
+    await download_and_send_existing(
+        update.message,
+        status_msg,
+        result
+    )
 
 
 # ============================================================
@@ -1562,22 +1705,27 @@ async def handle_text(
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
 
+    user_id = update.effective_user.id
+
+    # Feedback rejimi link/search logikasidan oldin tekshiriladi.
+    if user_id in PENDING_FEEDBACK:
+        await handle_feedback(
+            update,
+            context
+        )
+        return
+
     text = (
         update.message.text
         or ""
     )
 
-    if URL_PATTERN.search(
-        text
-    ):
-
+    if URL_PATTERN.search(text):
         await handle_link(
             update,
             context
         )
-
     else:
-
         await handle_text_search(
             update,
             context
@@ -1860,6 +2008,16 @@ def build_application() -> Application:
             "sozlanmagan."
         )
 
+    if ADMIN_CHAT_ID:
+        logger.info(
+            "ADMIN_CHAT_ID sozlangan."
+        )
+    else:
+        logger.warning(
+            "ADMIN_CHAT_ID sozlanmagan — "
+            "link va feedback admin'ga yuborilmaydi."
+        )
+
     # ========================================================
     # COOKIES
     # ========================================================
@@ -1906,11 +2064,19 @@ def main() -> None:
         )
     )
 
+    # Feedback
+    app.add_handler(
+        CommandHandler(
+            "feedback",
+            feedback_command
+        )
+    )
+
     # YouTube quality buttons
     app.add_handler(
         CallbackQueryHandler(
             youtube_quality_callback,
-            pattern=r"^yt_quality:"
+            pattern=r"^ytq:"
         )
     )
 
