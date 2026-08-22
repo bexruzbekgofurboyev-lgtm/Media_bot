@@ -344,8 +344,44 @@ YOUTUBE_FORMATS = {
         "best[height<=1080]"
     ),
 
+    "1440": (
+        "bestvideo[height<=1440]"
+        "+bestaudio/"
+        "best[height<=1440]"
+    ),
+
+    "2160": (
+        "bestvideo[height<=2160]"
+        "+bestaudio/"
+        "best[height<=2160]"
+    ),
+
     "audio": "bestaudio/best",
 }
+
+# Tugmalarda va xabarlarda ko'rsatiladigan chiroyli nomlar.
+QUALITY_LABELS = {
+    "360": "360p",
+    "480": "480p",
+    "720": "720p",
+    "1080": "1080p",
+    "1440": "1440p (2K)",
+    "2160": "2160p (4K)",
+    "audio": "🎵 MP3",
+}
+
+# 4K (2160p) video uchun qattiqroq hajm chegarasi — 1 GB.
+# Oddiy MAX_FILESIZE_MB (odatda 1900 MB) juda katta 4K fayllarga yo'l
+# qo'yib yuborishi mumkin, shuning uchun 4K uchun alohida, pastroq
+# chegara qo'yamiz.
+FOUR_K_MAX_MB = 1024
+
+
+def get_max_filesize_mb(quality: str) -> int:
+    """Tanlangan sifat uchun ruxsat etilgan maksimal hajmni (MB) qaytaradi."""
+    if quality == "2160":
+        return FOUR_K_MAX_MB
+    return MAX_FILESIZE_MB
 
 
 # ============================================================
@@ -419,7 +455,7 @@ def get_youtube_options(
             "merge_output_format": "mp4",
 
             "max_filesize": (
-                MAX_FILESIZE_MB
+                get_max_filesize_mb(quality)
                 * 1024
                 * 1024
             ),
@@ -489,6 +525,8 @@ def download_media(
         480
         720
         1080
+        1440 (2K)
+        2160 (4K)
     """
 
     outtmpl = str(
@@ -944,6 +982,17 @@ def youtube_quality_keyboard() -> InlineKeyboardMarkup:
 
         [
             InlineKeyboardButton(
+                "2K (1440p)",
+                callback_data="ytq:1440"
+            ),
+            InlineKeyboardButton(
+                "4K (2160p)",
+                callback_data="ytq:2160"
+            ),
+        ],
+
+        [
+            InlineKeyboardButton(
                 "🎵 MP3",
                 callback_data="ytq:audio"
             ),
@@ -978,7 +1027,7 @@ async def download_and_send(
         await status_msg.edit_text(
             "⏳ Yuklanmoqda...\n"
             f"🎚 Sifat: "
-            f"{quality if quality != 'audio' else 'MP3'}"
+            f"{QUALITY_LABELS.get(quality, quality)}"
         )
 
         try:
@@ -1026,10 +1075,22 @@ async def download_and_send(
                 in error_lower
             ):
 
-                await status_msg.edit_text(
-                    f"❌ Fayl "
-                    f"{MAX_FILESIZE_MB} MB dan katta."
-                )
+                if quality == "2160":
+
+                    await status_msg.edit_text(
+                        "❌ 4K (2160p) video hajmi "
+                        f"{FOUR_K_MAX_MB} MB (1 GB) dan katta "
+                        "bo'lgani uchun yubora olmayman.\n\n"
+                        "Boshqa sifatni tanlab ko'ring "
+                        "(masalan 1080p yoki 2K)."
+                    )
+
+                else:
+
+                    await status_msg.edit_text(
+                        f"❌ Fayl "
+                        f"{get_max_filesize_mb(quality)} MB dan katta."
+                    )
 
             elif "ffmpeg" in error_lower:
 
@@ -1076,14 +1137,17 @@ async def download_and_send(
             / (1024 * 1024)
         )
 
+        size_limit_mb = get_max_filesize_mb(quality)
+
         if (
             file_size_mb
-            > MAX_FILESIZE_MB
+            > size_limit_mb
         ):
 
             await status_msg.edit_text(
                 f"❌ Fayl juda katta: "
-                f"{file_size_mb:.0f} MB"
+                f"{file_size_mb:.0f} MB "
+                f"(limit: {size_limit_mb} MB)"
             )
 
             return
@@ -1339,7 +1403,8 @@ async def handle_link(
 
         await update.message.reply_text(
             "🎬 YouTube video topildi.\n\n"
-            "📊 Qaysi sifatda yuklaymiz?",
+            "📊 Qaysi sifatda yuklaymiz?\n"
+            f"ℹ️ 4K (2160p) uchun hajm chegarasi: {FOUR_K_MAX_MB} MB (1 GB)",
             reply_markup=(
                 youtube_quality_keyboard()
             )
@@ -1584,15 +1649,10 @@ async def youtube_quality_callback(
         )[1]
     )
 
-    if quality == "audio":
-
-        quality_text = "🎵 MP3"
-
-    else:
-
-        quality_text = (
-            f"🎬 {quality}p"
-        )
+    quality_text = QUALITY_LABELS.get(
+        quality,
+        f"{quality}p"
+    )
 
     await query.edit_message_text(
         f"⏳ Tanlandi: "
