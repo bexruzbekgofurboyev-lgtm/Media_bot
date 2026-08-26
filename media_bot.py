@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import mimetypes
 from pathlib import Path
-
+from shazamio import Shazam
 import requests
 import yt_dlp
 
@@ -62,14 +62,6 @@ MAX_FILESIZE_MB = int(
         "1900"
     )
 )
-
-# AudD
-AUDD_API_TOKEN = os.environ.get(
-    "AUDD_API_TOKEN",
-    ""
-).strip()
-
-AUDD_URL = "https://api.audd.io/"
 
 # Admin Telegram chat ID.
 # Railway Variables ichida ADMIN_CHAT_ID sifatida beriladi.
@@ -823,63 +815,22 @@ def extract_recognition_clip(input_path: str) -> str:
         logger.warning(f"ffmpeg audio ajratishda xato: {e}")
 
     return input_path
+#-------------------------------------------------------
+#========================================================
 
+async def recognize_song(filepath: str) -> dict | None:
+    """Shazam orqali fayldagi musiqani aniqlaydi."""
+    shazam = Shazam()
+    out = await shazam.recognize(filepath)
 
-def recognize_song(
-    filepath: str
-) -> dict:
-    """AudD.io orqali fayldagi musiqani tanib oladi.
+    track = out.get("track")
+    if not track:
+        return None
 
-    Muvaffaqiyatli aniqlansa natija dict'ini, aniqlanmasa None qaytaradi.
-    AudD xizmatining o'zi xato qaytarsa (masalan noto'g'ri token yoki
-    qo'llab-quvvatlanmaydigan format), RuntimeError ko'taradi — bu holat
-    "musiqa aniqlanmadi" bilan adashtirilmasligi kerak.
-    """
-
-    filename = os.path.basename(filepath)
-    guessed_type, _ = mimetypes.guess_type(filename)
-    content_type = guessed_type or "audio/mpeg"
-
-    with open(
-        filepath,
-        "rb"
-    ) as f:
-
-        response = requests.post(
-
-            AUDD_URL,
-
-            data={
-                "api_token": (
-                    AUDD_API_TOKEN
-                ),
-                "return": (
-                    "apple_music,spotify"
-                ),
-            },
-
-            files={
-                "file": (filename, f, content_type)
-            },
-
-            timeout=60,
-        )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    if data.get("status") == "error":
-        error_info = data.get("error", {}) or {}
-        raise RuntimeError(
-            "AudD xatosi "
-            f"[{error_info.get('error_code')}]: "
-            f"{error_info.get('error_message')}"
-        )
-
-    return data.get(
-        "result"
-    )
+    return {
+        "title": track.get("title", ""),
+        "artist": track.get("subtitle", ""),
+    }
 
 
 # ============================================================
@@ -1090,7 +1041,7 @@ async def download_and_send(
 
         await status_msg.edit_text(
             "⏳ Yuklanmoqda...\n"
-            f"🎚 Sifat: "
+            f"💫 Sifat: "
             f"{QUALITY_LABELS.get(quality, quality)}"
         )
 
@@ -1942,13 +1893,7 @@ async def handle_media_recognition(
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
 
-    if not AUDD_API_TOKEN:
 
-        await update.message.reply_text(
-            "🎧 AUDD_API_TOKEN sozlanmagan."
-        )
-
-        return
 
     message = update.message
 
@@ -2003,27 +1948,16 @@ async def handle_media_recognition(
         str(local_path)
     )
 
+# YANGI (async/await bilan):
     try:
-
-        result = (
-            await asyncio.to_thread(
-                recognize_song,
-                clip_path
-            )
-        )
+        result = await recognize_song(clip_path)
 
     except Exception as e:
-
-        logger.exception(
-            f"AudD xatosi: {e}"
-        )
-
+        logger.exception(f"Shazam xatosi: {e}")
         await status_msg.edit_text(
-            "❌ Musiqani aniqlashda xato yuz berdi "
-            "(AudD xizmati bilan bog'lanishda muammo). "
+            "❌ Musiqani aniqlashda xato yuz berdi. "
             "Birozdan so'ng qayta urinib ko'ring."
         )
-
         return
 
     finally:
@@ -2178,27 +2112,6 @@ def build_application() -> Application:
         logger.warning(
             "LOCAL_API_HOST "
             "sozlanmagan."
-        )
-
-    # ========================================================
-    # AUDD
-    # ========================================================
-
-    if not AUDD_API_TOKEN:
-
-        logger.warning(
-            "AUDD_API_TOKEN "
-            "sozlanmagan."
-        )
-
-    if ADMIN_CHAT_ID:
-        logger.info(
-            "ADMIN_CHAT_ID sozlangan."
-        )
-    else:
-        logger.warning(
-            "ADMIN_CHAT_ID sozlanmagan — "
-            "link va feedback admin'ga yuborilmaydi."
         )
 
     # ========================================================
