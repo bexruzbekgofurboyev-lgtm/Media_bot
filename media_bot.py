@@ -14,6 +14,8 @@ import logging
 import tempfile
 import asyncio
 import shutil
+import subprocess
+import mimetypes
 from pathlib import Path
 
 import requests
@@ -780,9 +782,63 @@ def download_audio_by_query(
 # AUDD
 # ============================================================
 
+# Musiqani aniqlash uchun fayldan olinadigan namuna davomiyligi (soniya).
+# Qisqa namuna AudD'ga yuklashni tezlashtiradi va formatni soddalashtiradi.
+RECOGNITION_CLIP_SECONDS = 25
+
+
+def extract_recognition_clip(input_path: str) -> str:
+    """ffmpeg orqali berilgan fayldan qisqa, toza mp3 namuna ajratib oladi.
+
+    Bu barcha kirish formatlarini (Telegram ovozli xabar OGG/Opus, video MP4
+    va h.k.) AudD uchun bir xil, ishonchli ko'rinishga keltiradi. Agar ffmpeg
+    muvaffaqiyatsiz bo'lsa (masalan o'rnatilmagan bo'lsa), asl fayl yo'li
+    qaytariladi — funksiya hech qachon xato ko'tarmaydi.
+    """
+    output_path = f"{input_path}_clip.mp3"
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", input_path,
+                "-t", str(RECOGNITION_CLIP_SECONDS),
+                "-vn",
+                "-acodec", "libmp3lame",
+                "-ar", "44100",
+                "-ac", "2",
+                output_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+        if result.returncode == 0 and os.path.exists(output_path):
+            return output_path
+
+        logger.warning(
+            "ffmpeg audio ajratishda muvaffaqiyatsiz, asl fayl yuboriladi: "
+            f"{result.stderr.decode(errors='ignore')[:300]}"
+        )
+    except Exception as e:
+        logger.warning(f"ffmpeg audio ajratishda xato: {e}")
+
+    return input_path
+
+
 def recognize_song(
     filepath: str
 ) -> dict:
+    """AudD.io orqali fayldagi musiqani tanib oladi.
+
+    Muvaffaqiyatli aniqlansa natija dict'ini, aniqlanmasa None qaytaradi.
+    AudD xizmatining o'zi xato qaytarsa (masalan noto'g'ri token yoki
+    qo'llab-quvvatlanmaydigan format), RuntimeError ko'taradi — bu holat
+    "musiqa aniqlanmadi" bilan adashtirilmasligi kerak.
+    """
+
+    filename = os.path.basename(filepath)
+    guessed_type, _ = mimetypes.guess_type(filename)
+    content_type = guessed_type or "audio/mpeg"
 
     with open(
         filepath,
@@ -803,7 +859,7 @@ def recognize_song(
             },
 
             files={
-                "file": f
+                "file": (filename, f, content_type)
             },
 
             timeout=60,
@@ -812,6 +868,14 @@ def recognize_song(
     response.raise_for_status()
 
     data = response.json()
+
+    if data.get("status") == "error":
+        error_info = data.get("error", {}) or {}
+        raise RuntimeError(
+            "AudD xatosi "
+            f"[{error_info.get('error_code')}]: "
+            f"{error_info.get('error_message')}"
+        )
 
     return data.get(
         "result"
@@ -1796,6 +1860,27 @@ async def handle_text(
 # MEDIA RECOGNITION
 # ============================================================
 
+def _recognition_source_extension(message) -> str:
+    """Telegram xabar turiga qarab mos fayl kengaytmasini aniqlaydi.
+
+    To'g'ri kengaytma ffmpeg'ga formatni ishonchliroq aniqlashga yordam
+    beradi (ayniqsa Telegram ovozli xabarlari OGG/Opus formatida keladi).
+    """
+    if message.voice:
+        return ".ogg"
+    if message.video_note:
+        return ".mp4"
+    if message.video:
+        return ".mp4"
+    if message.audio:
+        if message.audio.file_name and "." in message.audio.file_name:
+            return os.path.splitext(message.audio.file_name)[1]
+        return ".mp3"
+    if message.document and message.document.file_name and "." in message.document.file_name:
+        return os.path.splitext(message.document.file_name)[1]
+    return ""
+
+
 async def handle_media_recognition(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -1874,6 +1959,7 @@ async def handle_media_recognition(
             f"recognize_"
             f"{user_id}_"
             f"{tg_file.file_unique_id}"
+            f"{_recognition_source_extension(message)}"
         )
     )
 
@@ -1881,12 +1967,20 @@ async def handle_media_recognition(
         custom_path=str(local_path)
     )
 
+    # Kelgan faylni (OGG ovozli xabar, MP4 video va h.k.) AudD uchun
+    # bir xil, qisqa mp3 namunaga aylantiramiz — bu tanib olish
+    # ishonchliligini sezilarli oshiradi.
+    clip_path = await asyncio.to_thread(
+        extract_recognition_clip,
+        str(local_path)
+    )
+
     try:
 
         result = (
             await asyncio.to_thread(
                 recognize_song,
-                str(local_path)
+                clip_path
             )
         )
 
@@ -1897,19 +1991,20 @@ async def handle_media_recognition(
         )
 
         await status_msg.edit_text(
-            "❌ Musiqani aniqlashda xato."
+            "❌ Musiqani aniqlashda xato yuz berdi "
+            "(AudD xizmati bilan bog'lanishda muammo). "
+            "Birozdan so'ng qayta urinib ko'ring."
         )
 
         return
 
     finally:
 
-        try:
-            os.remove(
-                local_path
-            )
-        except OSError:
-            pass
+        for path_to_clean in {str(local_path), clip_path}:
+            try:
+                os.remove(path_to_clean)
+            except OSError:
+                pass
 
         gc.collect()
 
