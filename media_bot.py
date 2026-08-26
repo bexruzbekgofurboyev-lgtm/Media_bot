@@ -1881,6 +1881,62 @@ def _recognition_source_extension(message) -> str:
     return ""
 
 
+def _get_recognition_file_id(message):
+    """Xabardan tanib olish uchun kerakli fayl_id'ni chiqarib oladi."""
+    if message.voice:
+        return message.voice.file_id
+    if message.audio:
+        return message.audio.file_id
+    if message.video_note:
+        return message.video_note.file_id
+    if message.video:
+        return message.video.file_id
+    if (
+        message.document
+        and message.document.mime_type
+        and (
+            message.document.mime_type.startswith("audio/")
+            or message.document.mime_type.startswith("video/")
+        )
+    ):
+        return message.document.file_id
+    return None
+
+
+def cloud_download_file(file_id: str, dest_path: str) -> None:
+    """Foydalanuvchi yuborgan faylni to'g'ridan-to'g'ri Telegram'ning
+    STANDART (bulutli) serveridan yuklab oladi — LOCAL_API_HOST'dan
+    mustaqil ishlaydi.
+
+    Buning sababi: `telegram-api` xizmatimiz --local rejimida ishlayapti,
+    bu rejimda getFile natijasi HTTP orqali yuklab bo'lmaydigan, serverning
+    o'z diskidagi ABSOLYUT yo'lni qaytaradi (chunki local rejim odatda bot
+    va server bitta konteynerda, umumiy diskda ishlashini nazarda tutadi
+    — bizda esa ular alohida Railway xizmatlari). Foydalanuvchi yuborgan
+    fayllar (ovozli xabar, qisqa audio/video) odatda kichik bo'lgani
+    uchun, standart bulutli API'ning 20 MB chegarasi bu funksiya uchun
+    yetarli.
+    """
+    resp = requests.get(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile",
+        params={"file_id": file_id},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram getFile xatosi: {data}")
+
+    file_path = data["result"]["file_path"]
+    file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+
+    file_resp = requests.get(file_url, timeout=120)
+    file_resp.raise_for_status()
+
+    with open(dest_path, "wb") as f:
+        f.write(file_resp.content)
+
+
 async def handle_media_recognition(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -1896,51 +1952,9 @@ async def handle_media_recognition(
 
     message = update.message
 
-    tg_file = None
+    file_id = _get_recognition_file_id(message)
 
-    if message.voice:
-
-        tg_file = (
-            await message.voice.get_file()
-        )
-
-    elif message.audio:
-
-        tg_file = (
-            await message.audio.get_file()
-        )
-
-    elif message.video_note:
-
-        tg_file = (
-            await message.video_note.get_file()
-        )
-
-    elif message.video:
-
-        tg_file = (
-            await message.video.get_file()
-        )
-
-    elif (
-        message.document
-        and message.document.mime_type
-        and (
-            message.document.mime_type.startswith(
-                "audio/"
-            )
-            or
-            message.document.mime_type.startswith(
-                "video/"
-            )
-        )
-    ):
-
-        tg_file = (
-            await message.document.get_file()
-        )
-
-    if tg_file is None:
+    if file_id is None:
         return
 
     user_id = str(
@@ -1958,14 +1972,28 @@ async def handle_media_recognition(
         / (
             f"recognize_"
             f"{user_id}_"
-            f"{tg_file.file_unique_id}"
+            f"{file_id}"
             f"{_recognition_source_extension(message)}"
         )
     )
 
-    await tg_file.download_to_drive(
-        custom_path=str(local_path)
-    )
+    try:
+        # MUHIM: local Bot API server --local rejimida ishlagani uchun,
+        # foydalanuvchi yuborgan faylni PTB orqali emas, to'g'ridan-to'g'ri
+        # Telegram'ning standart (bulutli) serveridan yuklab olamiz.
+        await asyncio.to_thread(
+            cloud_download_file,
+            file_id,
+            str(local_path),
+        )
+    except Exception as e:
+        logger.exception(f"Fayl yuklab olishda xato: {e}")
+        await status_msg.edit_text(
+            "❌ Faylni yuklab olishda xato yuz berdi.\n\n"
+            "Eslatma: musiqani aniqlash funksiyasi 20 MB gacha "
+            "bo'lgan fayllar bilan ishlaydi."
+        )
+        return
 
     # Kelgan faylni (OGG ovozli xabar, MP4 video va h.k.) AudD uchun
     # bir xil, qisqa mp3 namunaga aylantiramiz — bu tanib olish
