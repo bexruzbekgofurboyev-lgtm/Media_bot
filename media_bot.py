@@ -79,21 +79,10 @@ PENDING_FEEDBACK = set()
 # YOUTUBE COOKIES
 # ============================================================
 
-YOUTUBE_COOKIES_CONTENT = os.environ.get(
-    "YOUTUBE_COOKIES",
+YOUTUBE_COOKIES_FILE_PATH = os.environ.get(
+    "YOUTUBE_COOKIES_FILE_PATH",
     ""
 ).strip()
-
-YOUTUBE_COOKIES_FILE = (
-    Path(tempfile.gettempdir())
-    / "youtube_cookies.txt"
-)
-
-if YOUTUBE_COOKIES_CONTENT:
-    YOUTUBE_COOKIES_FILE.write_text(
-        YOUTUBE_COOKIES_CONTENT,
-        encoding="utf-8"
-    )
 
 
 # ============================================================
@@ -133,13 +122,18 @@ PLATFORM_NAMES = {
 
 
 # ============================================================
-# YOUTUBE
+# YOUTUBE (Bot blokirovkasini chetlab o'tish sozlamalari)
 # ============================================================
 
 YOUTUBE_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["default"],
+        "player_client": ["android", "web"],
     }
+}
+
+YOUTUBE_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
 }
 
 
@@ -227,8 +221,8 @@ def check_system_dependencies() -> None:
 
     # Cookies
     if (
-        YOUTUBE_COOKIES_CONTENT
-        and YOUTUBE_COOKIES_FILE.exists()
+        YOUTUBE_COOKIES_FILE_PATH
+        and os.path.exists(YOUTUBE_COOKIES_FILE_PATH)
     ):
         logger.info(
             "YouTube cookies topildi"
@@ -236,12 +230,12 @@ def check_system_dependencies() -> None:
 
         logger.info(
             "Cookie file size: "
-            f"{YOUTUBE_COOKIES_FILE.stat().st_size} bytes"
+            f"{os.path.getsize(YOUTUBE_COOKIES_FILE_PATH)} bytes"
         )
 
     else:
         logger.warning(
-            "YOUTUBE_COOKIES sozlanmagan."
+            "YOUTUBE_COOKIES_FILE_PATH sozlanmagan yoki fayl topilmadi."
         )
 
 
@@ -482,17 +476,17 @@ def get_youtube_options(
         }
 
     # ========================================================
-    # COOKIES
+    # COOKIES & HEADERS
     # ========================================================
 
+    ydl_opts["http_headers"] = YOUTUBE_HEADERS
+
     if (
-        YOUTUBE_COOKIES_CONTENT
-        and YOUTUBE_COOKIES_FILE.exists()
+        YOUTUBE_COOKIES_FILE_PATH
+        and os.path.exists(YOUTUBE_COOKIES_FILE_PATH)
     ):
 
-        ydl_opts["cookiefile"] = (
-            str(YOUTUBE_COOKIES_FILE)
-        )
+        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE_PATH
 
         logger.info(
             "yt-dlp uchun YouTube "
@@ -771,7 +765,7 @@ def download_audio_by_query(
 
 
 # ============================================================
-# AUDD
+# AUDD (Shazam uchun faylni tayyorlash)
 # ============================================================
 
 # Musiqani aniqlash uchun fayldan olinadigan namuna davomiyligi (soniya).
@@ -815,8 +809,11 @@ def extract_recognition_clip(input_path: str) -> str:
         logger.warning(f"ffmpeg audio ajratishda xato: {e}")
 
     return input_path
-#-------------------------------------------------------
-#========================================================
+
+
+# ============================================================
+# SHAZAM
+# ============================================================
 
 async def recognize_song(filepath: str) -> dict | None:
     """Shazam orqali fayldagi musiqani aniqlaydi."""
@@ -2119,8 +2116,8 @@ def build_application() -> Application:
     # ========================================================
 
     if (
-        YOUTUBE_COOKIES_CONTENT
-        and YOUTUBE_COOKIES_FILE.exists()
+        YOUTUBE_COOKIES_FILE_PATH
+        and os.path.exists(YOUTUBE_COOKIES_FILE_PATH)
     ):
 
         logger.info(
@@ -2130,8 +2127,8 @@ def build_application() -> Application:
     else:
 
         logger.warning(
-            "YOUTUBE_COOKIES "
-            "sozlanmagan."
+            "YOUTUBE_COOKIES_FILE_PATH "
+            "sozlanmagan yoki topilmadi."
         )
 
     return builder.build()
