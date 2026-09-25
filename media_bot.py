@@ -493,7 +493,9 @@ def get_youtube_options(
             "yt-dlp uchun YouTube "
             "cookies ishlatilmoqda."
         )
-
+    # Cloudflare WARP proksisi orqali o'tkazish
+    ydl_opts["proxy"] = "socks5://127.0.0.1:40000"
+    
     return ydl_opts
 
 
