@@ -1,4 +1,4 @@
 python-telegram-bot==21.6
 yt-dlp[default]>=2026.1.1
 requests==2.32.3
-shazamio
+shazamio>=0.7.0
