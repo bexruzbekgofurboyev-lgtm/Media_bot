@@ -143,7 +143,7 @@ YOUTUBE_HEADERS = {
 
 # Bir vaqtning o'zida faqat bitta katta download.
 # Bu Railway RAM'ini himoya qiladi.
-DOWNLOAD_SEMAPHORE = asyncio.Semaphore(1)
+DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
 
 
 # ============================================================
@@ -362,7 +362,7 @@ QUALITY_LABELS = {
 # Oddiy MAX_FILESIZE_MB (odatda 1900 MB) juda katta 4K fayllarga yo'l
 # qo'yib yuborishi mumkin, shuning uchun 4K uchun alohida, pastroq
 # chegara qo'yamiz.
-FOUR_K_MAX_MB = 1024
+FOUR_K_MAX_MB = 1900
 
 
 def get_max_filesize_mb(quality: str) -> int:
