@@ -120,20 +120,20 @@ PLATFORM_NAMES = {
     "tiktok.com": "TikTok",
 }
 
-
 # ============================================================
 # YOUTUBE (Bot blokirovkasini chetlab o'tish sozlamalari)
 # ============================================================
 
 YOUTUBE_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["android", "ios"],
-        "player_skip": ["web", "default"],
+        # 'tv' (Smart TV) va 'ios' mijozlari hozirda eng ishonchli
+        "player_client": ["tv", "ios", "mweb"],
+        "player_skip": ["web", "default", "android"],
     }
 }
 
 YOUTUBE_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
