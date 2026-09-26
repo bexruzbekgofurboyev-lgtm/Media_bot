@@ -1346,7 +1346,7 @@ async def start(
         "musiqani aniqlashga harakat qilaman.\n\n"
 
         "⚠️ Faqat foydalanishga haqqingiz "
-        "bo'lgan kontentdan foydalaning."
+        "bo'lgan kontentdan foydalaning.OK"
     )
 
     await update.message.reply_text(
