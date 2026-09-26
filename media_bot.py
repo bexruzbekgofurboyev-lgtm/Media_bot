@@ -138,6 +138,7 @@ YOUTUBE_HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
+
 # ============================================================
 # DOWNLOAD SEMAPHORE
 # ============================================================
@@ -474,7 +475,7 @@ def get_youtube_options(
         }
 
     # ========================================================
-    # COOKIES & HEADERS
+    # COOKIES, HEADERS & PROXY / IPv6
     # ========================================================
 
     ydl_opts["http_headers"] = YOUTUBE_HEADERS
@@ -490,14 +491,13 @@ def get_youtube_options(
         ydl_opts["legacyserverconnect"] = True
 
         logger.info(
-            "yt-dlp uchun YouTube "
-            "cookies ishlatilmoqda."
+            "yt-dlp uchun YouTube cookies ishlatilmoqda."
         )
 
-    # Cloudflare WARP proksisi orqali o'tkazish
-    ydl_opts["proxy"] = "socks5://127.0.0.1:40000"
+    # IPv6 randomizatsiyasi (WARP proksisiz ichki IP'larni aylantirish)
+    ydl_opts["source_address"] = "0.0.0.0"
 
-    # Yangi xatolar (kabi The page needs to be reloaded) ni ignore qilish
+    # Yangi xatolar (kabi The page needs to be reloaded) botni o'ldirmasligi uchun
     ydl_opts["ignoreerrors"] = True
     
     return ydl_opts
@@ -603,6 +603,10 @@ def download_media(
             url,
             download=True
         )
+
+        # AGAR YOUTUBE INFO QAYTAROLMASA XATONI USHLAB QOLISH
+        if not info:
+            raise yt_dlp.utils.DownloadError("YouTube kontentni taqdim etmadi (Bloklangan bo'lishi yoki cookie eskirgan bo'lishi mumkin)")
 
         filepath = (
             ydl.prepare_filename(
@@ -718,6 +722,10 @@ def download_audio_by_query(
             f"ytsearch1:{query}",
             download=True
         )
+
+        # AGAR YOUTUBE INFO QAYTAROLMASA XATONI USHLAB QOLISH
+        if not info:
+            raise yt_dlp.utils.DownloadError("Qidiruv natijasi bo'sh qaytdi. (YouTube blokirovkasi bo'lishi mumkin)")
 
         if (
             "entries" in info
@@ -1121,7 +1129,7 @@ async def download_and_send(
             else:
 
                 await status_msg.edit_text(
-                    "❌ Yuklab olishda xato."
+                    "❌ Yuklab olishda xato. (YouTube blokirovkasi bo'lishi mumkin)"
                 )
 
             return
