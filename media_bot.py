@@ -126,17 +126,17 @@ PLATFORM_NAMES = {
 
 YOUTUBE_EXTRACTOR_ARGS = {
     "youtube": {
-        # 'tv' (Smart TV) va 'ios' mijozlari hozirda eng ishonchli
-        "player_client": ["tv", "ios", "mweb"],
-        "player_skip": ["web", "default", "android"],
+        # TV va Android eng barqaror mijozlar
+        "player_client": ["tv", "android", "web"],
+        # Brauzer imzosini aniq yuborish
+        "po_token": ["web", "mweb"],
     }
 }
 
 YOUTUBE_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     'Accept-Language': 'en-US,en;q=0.9',
 }
-
 
 # ============================================================
 # DOWNLOAD SEMAPHORE
@@ -482,21 +482,26 @@ def get_youtube_options(
 
     ydl_opts["http_headers"] = YOUTUBE_HEADERS
 
-    # Cookie vaqtincha O'CHIRILDI (Region muammosini oldini olish uchun)
-    # if (
-    #     YOUTUBE_COOKIES_FILE_PATH
-    #     and os.path.exists(YOUTUBE_COOKIES_FILE_PATH)
-    # ):
-    #
-    #     ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE_PATH
-    #
-    #     logger.info(
-    #         "yt-dlp uchun YouTube "
-    #         "cookies ishlatilmoqda."
-    #     )
+    if (
+        YOUTUBE_COOKIES_FILE_PATH
+        and os.path.exists(YOUTUBE_COOKIES_FILE_PATH)
+    ):
+
+        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE_PATH
+
+        # Bu parametr cookie dan kelgan bloklarni qo'shimcha aylanib o'tishga yordam beradi
+        ydl_opts["legacyserverconnect"] = True
+
+        logger.info(
+            "yt-dlp uchun YouTube "
+            "cookies ishlatilmoqda."
+        )
 
     # Cloudflare WARP proksisi orqali o'tkazish
     ydl_opts["proxy"] = "socks5://127.0.0.1:40000"
+
+    # Yangi xatolar (kabi The page needs to be reloaded) ni ignore qilish
+    ydl_opts["ignoreerrors"] = True
     
     return ydl_opts
 
