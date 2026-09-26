@@ -359,10 +359,7 @@ QUALITY_LABELS = {
     "audio": "🎵 MP3",
 }
 
-# 4K (2160p) video uchun qattiqroq hajm chegarasi — 1 GB.
-# Oddiy MAX_FILESIZE_MB (odatda 1900 MB) juda katta 4K fayllarga yo'l
-# qo'yib yuborishi mumkin, shuning uchun 4K uchun alohida, pastroq
-# chegara qo'yamiz.
+# 4K (2160p) video uchun qattiqroq hajm chegarasi — 1900 MB.
 FOUR_K_MAX_MB = 1900
 
 
