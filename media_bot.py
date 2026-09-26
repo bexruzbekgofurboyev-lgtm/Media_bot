@@ -482,17 +482,19 @@ def get_youtube_options(
 
     ydl_opts["http_headers"] = YOUTUBE_HEADERS
 
-    if (
-        YOUTUBE_COOKIES_FILE_PATH
-        and os.path.exists(YOUTUBE_COOKIES_FILE_PATH)
-    ):
+    # Cookie vaqtincha O'CHIRILDI (Region muammosini oldini olish uchun)
+    # if (
+    #     YOUTUBE_COOKIES_FILE_PATH
+    #     and os.path.exists(YOUTUBE_COOKIES_FILE_PATH)
+    # ):
+    #
+    #     ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE_PATH
+    #
+    #     logger.info(
+    #         "yt-dlp uchun YouTube "
+    #         "cookies ishlatilmoqda."
+    #     )
 
-        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE_PATH
-
-        logger.info(
-            "yt-dlp uchun YouTube "
-            "cookies ishlatilmoqda."
-        )
     # Cloudflare WARP proksisi orqali o'tkazish
     ydl_opts["proxy"] = "socks5://127.0.0.1:40000"
     
@@ -730,10 +732,10 @@ def download_audio_by_query(
 
         base = os.path.splitext(
             filepath
-        )[0]
+        )
 
         mp3_path = (
-            f"{base}.mp3"
+            f"{base[0]}.mp3"
         )
 
         if os.path.exists(
@@ -1346,7 +1348,7 @@ async def start(
         "musiqani aniqlashga harakat qilaman.\n\n"
 
         "⚠️ Faqat foydalanishga haqqingiz "
-        "bo'lgan kontentdan foydalaning.OK"
+        "bo'lgan kontentdan foydalaning."
     )
 
     await update.message.reply_text(
