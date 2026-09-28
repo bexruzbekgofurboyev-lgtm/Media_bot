@@ -57,6 +57,12 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 PENDING_FEEDBACK = set()
 
 # ============================================================
+# YOUTUBE COOKIES
+# ============================================================
+
+YOUTUBE_COOKIES_FILE_PATH = os.environ.get("YOUTUBE_COOKIES_FILE_PATH", "").strip()
+
+# ============================================================
 # DOWNLOAD PAPKA
 # ============================================================
 
@@ -129,6 +135,12 @@ def check_system_dependencies() -> None:
     else:
         logger.warning("FFmpeg topilmadi! Ovoz ajratish ishlamaydi.")
 
+    if YOUTUBE_COOKIES_FILE_PATH and os.path.exists(YOUTUBE_COOKIES_FILE_PATH):
+        logger.info("YouTube cookies topildi")
+        logger.info(f"Cookie file size: {os.path.getsize(YOUTUBE_COOKIES_FILE_PATH)} bytes")
+    else:
+        logger.warning(f"YOUTUBE_COOKIES_FILE_PATH sozlanmagan yoki topilmadi: {YOUTUBE_COOKIES_FILE_PATH}")
+
 # ============================================================
 # YORDAMCHI FUNKSIYALAR
 # ============================================================
@@ -196,7 +208,6 @@ def get_youtube_options(outtmpl: str, quality: str = "720", audio_only: bool = F
         "http_chunk_size": 10 * 1024 * 1024,
         "http_headers": YOUTUBE_HEADERS,
         "proxy": "socks5://127.0.0.1:40000",
-        "username": "oauth2", # OAuth2 orqali blokirovkani aylanib o'tish
         "ignoreerrors": True, # Xatolarni qulatib yubormaslik uchun
     }
 
@@ -217,6 +228,14 @@ def get_youtube_options(outtmpl: str, quality: str = "720", audio_only: bool = F
             "keepvideo": False,
         })
     
+    # COOKIES'NI QAYTA ULANISHI (OAuth2 bekor qilingani sababli)
+    if YOUTUBE_COOKIES_FILE_PATH and os.path.exists(YOUTUBE_COOKIES_FILE_PATH):
+        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE_PATH
+        ydl_opts["legacyserverconnect"] = True
+        logger.info("yt-dlp uchun YouTube cookies ishlatilmoqda.")
+    else:
+        logger.warning(f"YOUTUBE_COOKIES_FILE_PATH topilmadi yoki xato: {YOUTUBE_COOKIES_FILE_PATH}")
+
     return ydl_opts
 
 # ============================================================
@@ -249,7 +268,7 @@ def download_media(url: str, user_id: str, quality: str = "720") -> dict:
         try:
             info = ydl.extract_info(url, download=True)
             if not info:
-                raise yt_dlp.utils.DownloadError("YouTube kontentni bermadi. (OAUTH2 tokenni terminal orqali ulang yoki bot kuting)")
+                raise yt_dlp.utils.DownloadError("YouTube kontentni bermadi (IP yoki Cookie blokirovkasi).")
         except Exception as e:
             raise yt_dlp.utils.DownloadError(f"Yuklashda xato yuz berdi: {str(e)}")
 
