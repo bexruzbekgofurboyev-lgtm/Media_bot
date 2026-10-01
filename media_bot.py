@@ -67,13 +67,10 @@ PLATFORM_NAMES = {
 }
 
 # ============================================================
-# COBALT API TAYANCH SERVERLARI (YANGILANGAN)
+# COBALT API TAYANCH SERVERLARI (O'zingizning mahalliy serveringiz)
 # ============================================================
 COBALT_API_URLS = [
-    "https://api.cobalt.tools",
-    "https://cobalt-api.kwiatekit.com",
-    "https://cobalt.api.timelessnesses.me",
-    "https://cobalt.zorner.me"
+    "http://127.0.0.1:9000/"
 ]
 
 # yt-dlp Qidiruv uchun
