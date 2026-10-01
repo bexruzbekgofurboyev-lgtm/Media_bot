@@ -112,7 +112,7 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
 
-    # Sifatni to'g'irlash
+    # Sifatni to'g'irlash (Cobalt v10 API qoidalari)
     if quality == "2160": vQuality = "max"
     elif quality == "1440": vQuality = "1440"
     elif quality == "1080": vQuality = "1080"
@@ -120,12 +120,13 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
     elif quality == "360": vQuality = "360"
     else: vQuality = "720"
 
+    # Cobalt v10 uchun to'g'rilangan payload (vQuality -> videoQuality)
     payload = {
         "url": url,
-        "vQuality": vQuality,
+        "videoQuality": vQuality,
         "filenamePattern": "basic",
         "isAudioOnly": audio_only or quality == "audio",
-        "aFormat": "mp3",
+        "audioFormat": "mp3",
     }
 
     # Bir nechta tayanch serverlarni sinab ko'rish
@@ -133,18 +134,26 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
     for api_url in COBALT_API_URLS:
         try:
             r = requests.post(api_url, headers=headers, json=payload, timeout=30)
-            if r.status_code == 200:
+            if r.status_code == 200 or r.status_code == 202:
                 api_response = r.json()
-                if api_response.get("status") in ["stream", "redirect"]:
+                if api_response.get("status") in ["stream", "redirect", "success", "picker"]:
                     break
+            else:
+                # Agar API xato qaytarsa, aniq sababini logga yozish
+                logger.warning(f"Cobalt API xato qaytardi ({api_url}): HTTP {r.status_code} - {r.text}")
         except Exception as e:
-            logger.warning(f"Cobalt API ({api_url}) xato berdi: {e}")
+            logger.warning(f"Cobalt API ulanishda xato ({api_url}): {e}")
             continue
 
-    if not api_response or api_response.get("status") not in ["stream", "redirect"]:
+    if not api_response or api_response.get("status") not in ["stream", "redirect", "success", "picker"]:
         raise ValueError(f"Cobalt orqali yuklab bo'lmadi. API javobi: {api_response}")
 
     download_link = api_response.get("url")
+    
+    # Agar picker (bir nechta fayl tanlovi) bo'lsa, birinchisini olish
+    if not download_link and api_response.get("status") == "picker":
+        download_link = api_response.get("picker")[0].get("url")
+
     title = api_response.get("filename", "Media")
     
     # Faylni yuklab olish
