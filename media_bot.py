@@ -120,14 +120,16 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
     elif quality == "360": vQuality = "360"
     else: vQuality = "720"
 
-    # Cobalt v10 uchun to'g'rilangan payload (vQuality -> videoQuality)
+    # Cobalt v10 uchun to'g'rilangan sodda payload
     payload = {
         "url": url,
         "videoQuality": vQuality,
-        "filenamePattern": "basic",
-        "isAudioOnly": audio_only or quality == "audio",
-        "audioFormat": "mp3",
+        "filenamePattern": "basic"
     }
+    
+    if audio_only or quality == "audio":
+        payload["isAudioOnly"] = True
+        payload["audioFormat"] = "mp3"
 
     # Bir nechta tayanch serverlarni sinab ko'rish
     api_response = None
@@ -139,7 +141,6 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
                 if api_response.get("status") in ["stream", "redirect", "success", "picker"]:
                     break
             else:
-                # Agar API xato qaytarsa, aniq sababini logga yozish
                 logger.warning(f"Cobalt API xato qaytardi ({api_url}): HTTP {r.status_code} - {r.text}")
         except Exception as e:
             logger.warning(f"Cobalt API ulanishda xato ({api_url}): {e}")
