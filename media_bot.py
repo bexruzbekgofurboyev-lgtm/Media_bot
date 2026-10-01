@@ -1,41 +1,21 @@
 """
-Ijtimoiy tarmoqlardan (Instagram, YouTube, Facebook, X, TikTok) video va rasm
-yuklab beruvchi, shuningdek musiqani nomi bo'yicha yoki audio/video fayl
-orqali (Shazam kabi) topib beruvchi Telegram bot.
-
-Katta hajmli fayllarni yuborish uchun bu bot LOCAL Telegram Bot API serveriga ulanadi.
+Media Downloader Bot (Cobalt API v10)
 """
 
 import os
 import re
 import gc
-import json
 import logging
 import tempfile
 import asyncio
-import shutil
 import subprocess
 from pathlib import Path
 from shazamio import Shazam
 import requests
 import yt_dlp
 
-from telegram import (
-    Update,
-    InputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
-
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from telegram.request import HTTPXRequest
 
 # ============================================================
@@ -47,131 +27,96 @@ LOCAL_API_HOST = os.environ.get("LOCAL_API_HOST", "").strip()
 MAX_FILESIZE_MB = int(os.environ.get("MAX_FILESIZE_MB", "1900"))
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 
-PENDING_FEEDBACK = set()
 DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "media_bot_downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-URL_PATTERN = re.compile(r"https?://\S+")
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
 PENDING_YOUTUBE = {}
+PENDING_FEEDBACK = set()
 
-PLATFORM_NAMES = {
-    "instagram.com": "Instagram",
-    "youtube.com": "YouTube",
-    "youtu.be": "YouTube",
-    "facebook.com": "Facebook",
-    "fb.watch": "Facebook",
-    "twitter.com": "X (Twitter)",
-    "x.com": "X (Twitter)",
-    "tiktok.com": "TikTok",
+# O'ZINGIZNING MAHALLIY COBALT SERVERINGIZ
+COBALT_API_URLS = ["http://127.0.0.1:9000"]
+
+# Tugmalardagi matnlar 
+QUALITY_LABELS = {
+    "360": "360p",
+    "480": "480p",
+    "720": "720p",
+    "1080": "1080p",
+    "1440": "1440p (2K)",
+    "2160": "2160p (4K)",
+    "audio": "🎵 MP3",
 }
 
-# ============================================================
-# COBALT API TAYANCH SERVERLARI (O'zingizning mahalliy serveringiz)
-# ============================================================
-COBALT_API_URLS = [
-    "http://127.0.0.1:9000/"
-]
-
-# yt-dlp Qidiruv uchun
-YOUTUBE_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["android", "web"],
-    }
-}
+URL_PATTERN = re.compile(r"https?://\S+")
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# ============================================================
-# YORDAMCHI FUNKSIYALAR
-# ============================================================
-
-def detect_platform(url: str) -> str:
-    for domain, name in PLATFORM_NAMES.items():
-        if domain in url:
-            return name
-    return "Noma'lum manba"
 
 def get_max_filesize_mb(quality: str) -> int:
     return 1900 if quality == "2160" else MAX_FILESIZE_MB
 
 def build_caption(title: str = "Media") -> str:
-    return f"🎬 {title}\n🤖 Media Bot orqali yuklandi"
+    return f"🎬 {title}\n🤖 Media Bot"
 
 # ============================================================
-# COBALT API ORQALI YUKLASH (YANGI USUL)
+# COBALT API ORQALI YUKLASH (Eng toza payload bilan)
 # ============================================================
 
 def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only: bool = False) -> dict:
-    """Cobalt xizmati orqali video/audio yuklash (v10 API formatida)."""
-    
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "MediaBot/1.0"
     }
 
-    # Sifatni to'g'irlash (Cobalt v10 API qoidalari)
-    if quality == "2160": vQuality = "max"
-    elif quality == "1440": vQuality = "1440"
-    elif quality == "1080": vQuality = "1080"
-    elif quality == "480": vQuality = "480"
-    elif quality == "360": vQuality = "360"
-    else: vQuality = "720"
+    # Asosiy payload
+    payload = {"url": url}
 
-    # Cobalt v10 uchun qat'iy va toza payload formati
-    payload = {
-        "url": url,
-        "videoQuality": vQuality,
-        "filenamePattern": "basic"
-    }
-
-    # API v10 da 'isAudioOnly' yoki 'aFormat' ishlamaydi, o'rniga
-    # 'downloadMode' orqali "audio" ni ko'rsatish talab qilinadi.
+    # Agar audio so'ralsa:
     if audio_only or quality == "audio":
         payload["downloadMode"] = "audio"
+        payload["audioFormat"] = "mp3"
+    # Sifat faqat YouTube kabi platformalarda ishlaydi
+    elif "youtu" in url:
+        if quality == "2160": payload["videoQuality"] = "max"
+        elif quality in ["1440", "1080", "720", "480", "360"]: payload["videoQuality"] = quality
+        else: payload["videoQuality"] = "720"
 
-    # Bir nechta tayanch serverlarni sinab ko'rish
     api_response = None
     for api_url in COBALT_API_URLS:
         try:
             r = requests.post(api_url, headers=headers, json=payload, timeout=30)
-            if r.status_code == 200 or r.status_code == 202:
+            if r.status_code in [200, 202]:
                 api_response = r.json()
                 if api_response.get("status") in ["stream", "redirect", "success", "picker"]:
                     break
             else:
-                logger.warning(f"Cobalt API xato qaytardi ({api_url}): HTTP {r.status_code} - {r.text}")
+                logger.warning(f"Cobalt xato qaytardi ({api_url}): HTTP {r.status_code} - {r.text}")
         except Exception as e:
-            logger.warning(f"Cobalt API ulanishda xato ({api_url}): {e}")
+            logger.warning(f"Cobalt ulanishida xato ({api_url}): {e}")
             continue
 
     if not api_response or api_response.get("status") not in ["stream", "redirect", "success", "picker"]:
-        raise ValueError(f"Cobalt orqali yuklab bo'lmadi. API javobi: {api_response}")
+        raise ValueError(f"Cobalt xato qaytardi: {api_response}")
 
     download_link = api_response.get("url")
-    
-    # Agar picker (bir nechta fayl tanlovi) bo'lsa, birinchisini olish
     if not download_link and api_response.get("status") == "picker":
         picker_items = api_response.get("picker")
         if picker_items and isinstance(picker_items, list):
             download_link = picker_items[0].get("url")
 
     if not download_link:
-        raise ValueError(f"Cobalt download_link qaytarmadi. API javobi: {api_response}")
+        raise ValueError("Cobalt fayl havolasini bermadi.")
 
     title = api_response.get("filename", "Media")
-    
-    # Faylni yuklab olish
     filepath = str(DOWNLOAD_DIR / f"{user_id}_cobalt_{title}")
     
-    logger.info(f"Fayl yuklanmoqda (Cobalt): {download_link}")
+    logger.info(f"Yuklanmoqda: {download_link}")
     
     dl_req = requests.get(download_link, stream=True, timeout=60)
     dl_req.raise_for_status()
 
-    # Fayl kengaytmasini to'g'irlash
     content_type = dl_req.headers.get("content-type", "")
     if "audio" in content_type or audio_only or quality == "audio":
         media_type = "audio"
@@ -193,31 +138,28 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
         "title": title,
     }
 
-
 # ============================================================
-# AUDIO SEARCH (yt-dlp orqali faqat qidiruv ishlaydi)
+# AUDIO SEARCH
 # ============================================================
 
 def download_audio_by_query(query: str, user_id: str) -> dict:
-    """Musiqa nomini qidirib topib, keyin Cobalt orqali yuklaydi."""
     ydl_opts = {
         "quiet": True,
-        "extract_flat": True, # Faqat ma'lumot qidiradi, yuklamaydi (Bloklanmaydi)
-        "extractor_args": YOUTUBE_EXTRACTOR_ARGS
+        "extract_flat": True, 
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}}
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         logger.info(f"YouTube qidiruv: {query}")
         try:
             info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            if not info or ("entries" in info and not info["entries"]):
-                raise Exception("Qidiruv bo'sh.")
+            if not info or not info.get("entries"):
+                raise Exception("Qidiruv natijasi bo'sh.")
             
             video_url = info["entries"][0].get("url")
             if not video_url:
                 raise Exception("Video havolasi topilmadi.")
                 
-            # Topilgan url ni Cobalt ga uzatamiz
             return download_via_cobalt(video_url, user_id, audio_only=True)
             
         except Exception as e:
@@ -227,12 +169,10 @@ def download_audio_by_query(query: str, user_id: str) -> dict:
 # SHAZAM RECOGNITION
 # ============================================================
 
-RECOGNITION_CLIP_SECONDS = 25
-
 def extract_recognition_clip(input_path: str) -> str:
     output_path = f"{input_path}_clip.mp3"
     try:
-        subprocess.run(["ffmpeg", "-y", "-i", input_path, "-t", str(RECOGNITION_CLIP_SECONDS), "-vn", "-acodec", "libmp3lame", "-ar", "44100", "-ac", "2", output_path], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60)
+        subprocess.run(["ffmpeg", "-y", "-i", input_path, "-t", "25", "-vn", "-acodec", "libmp3lame", "-ar", "44100", "-ac", "2", output_path], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60)
         if os.path.exists(output_path): return output_path
     except Exception: pass
     return input_path
@@ -243,45 +183,6 @@ async def recognize_song(filepath: str) -> dict | None:
     track = out.get("track")
     if not track: return None
     return {"title": track.get("title", ""), "artist": track.get("subtitle", "")}
-
-# ============================================================
-# ADMIN & FEEDBACK
-# ============================================================
-
-def get_user_info(update: Update) -> str:
-    user = update.effective_user
-    if not user:
-        return "👤 Noma'lum"
-    full_name = user.full_name or "Noma'lum"
-    username = f"@{user.username}" if user.username else "yo'q"
-    return f"👤 {full_name} | 🔹 {username} | 🆔 {user.id}"
-
-async def send_to_admin(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    if ADMIN_CHAT_ID:
-        try:
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, disable_web_page_preview=True)
-        except Exception as e:
-            logger.exception(f"Adminga yuborishda xato: {e}")
-
-async def notify_admin_about_link(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, platform: str) -> None:
-    user_info = get_user_info(update)
-    await send_to_admin(context, f"🔗 YANGI LINK\n\n{user_info}\n🌐 {platform}\n🔗 {url}")
-
-async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    PENDING_FEEDBACK.add(update.effective_user.id)
-    await update.message.reply_text("✍️ Feedback yozing. Keyingi xabaringiz adminga yuboriladi.")
-
-async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id not in PENDING_FEEDBACK:
-        return
-    feedback = (update.message.text or "").strip()
-    if not feedback:
-        await update.message.reply_text("❌ Xabar bo'sh.")
-        return
-    await send_to_admin(context, f"📩 FEEDBACK\n\n{get_user_info(update)}\n💬 {feedback}")
-    PENDING_FEEDBACK.discard(user_id)
-    await update.message.reply_text("✅ Yuborildi. Rahmat!")
 
 # ============================================================
 # INLINE KEYBOARDS
@@ -511,7 +412,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE | filters.Document.AUDIO | filters.Document.VIDEO, handle_media_recognition))
 
-    logger.info("Bot ishga tushmoqda (Cobalt API bilan)...")
+    logger.info("Bot ishga tushmoqda (Local Cobalt API bilan)...")
     app.run_polling()
 
 if __name__ == "__main__":
