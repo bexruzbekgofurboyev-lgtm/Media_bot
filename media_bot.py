@@ -3,13 +3,13 @@ Ijtimoiy tarmoqlardan (Instagram, YouTube, Facebook, X, TikTok) video va rasm
 yuklab beruvchi, shuningdek musiqani nomi bo'yicha yoki audio/video fayl
 orqali (Shazam kabi) topib beruvchi Telegram bot.
 
-Katta hajmli fayllarni (2 GB gacha) yuborish uchun bu bot LOCAL Telegram Bot
-API serveriga ulanadi.
+Katta hajmli fayllarni yuborish uchun bu bot LOCAL Telegram Bot API serveriga ulanadi.
 """
 
 import os
 import re
 import gc
+import json
 import logging
 import tempfile
 import asyncio
@@ -43,37 +43,17 @@ from telegram.request import HTTPXRequest
 # ============================================================
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-
-# Local Telegram Bot API
 LOCAL_API_HOST = os.environ.get("LOCAL_API_HOST", "").strip()
-
-# Maksimal fayl hajmi
 MAX_FILESIZE_MB = int(os.environ.get("MAX_FILESIZE_MB", "1900"))
-
-# Admin Telegram chat ID
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 
-# Feedback holati: foydalanuvchi ID'lari
 PENDING_FEEDBACK = set()
-
-# ============================================================
-# YOUTUBE COOKIES
-# ============================================================
-
-YOUTUBE_COOKIES_FILE_PATH = os.environ.get("YOUTUBE_COOKIES_FILE_PATH", "").strip()
-
-# ============================================================
-# DOWNLOAD PAPKA
-# ============================================================
-
 DOWNLOAD_DIR = Path(tempfile.gettempdir()) / "media_bot_downloads"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# ============================================================
-# URL PATTERNS & PLATFORMS
-# ============================================================
-
 URL_PATTERN = re.compile(r"https?://\S+")
+DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
+PENDING_YOUTUBE = {}
 
 PLATFORM_NAMES = {
     "instagram.com": "Instagram",
@@ -86,60 +66,21 @@ PLATFORM_NAMES = {
     "tiktok.com": "TikTok",
 }
 
-# ============================================================
-# YOUTUBE OPTIONS & HEADERS
-# ============================================================
+# COBALT API TAYANCH SERVELARI
+COBALT_API_URLS = [
+    "https://api.cobalt.tools/api/json",
+    "https://co.wuk.sh/api/json"
+]
 
+# yt-dlp Qidiruv uchun
 YOUTUBE_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["tv", "android", "web"],
-        "po_token": ["web", "mweb"],
+        "player_client": ["android", "web"],
     }
 }
 
-YOUTUBE_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-}
-
-# Bir vaqtning o'zida faqat bitta katta download.
-DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
-
-# user_id -> {"url": "..."}
-PENDING_YOUTUBE = {}
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# ============================================================
-# SYSTEM CHECK
-# ============================================================
-
-def check_system_dependencies() -> None:
-    try:
-        logger.info(f"yt-dlp version: {yt_dlp.version.__version__}")
-    except Exception:
-        logger.warning("yt-dlp versionini aniqlab bo'lmadi.")
-
-    ffmpeg_path = shutil.which("ffmpeg")
-    if ffmpeg_path:
-        logger.info(f"FFmpeg topildi: {ffmpeg_path}")
-    else:
-        logger.warning("FFmpeg topilmadi! Ovoz ajratish ishlamaydi.")
-
-    if YOUTUBE_COOKIES_FILE_PATH and os.path.exists(YOUTUBE_COOKIES_FILE_PATH):
-        logger.info("YouTube cookies topildi")
-        logger.info(f"Cookie file size: {os.path.getsize(YOUTUBE_COOKIES_FILE_PATH)} bytes")
-    else:
-        logger.warning(f"YOUTUBE_COOKIES_FILE_PATH sozlanmagan yoki topilmadi: {YOUTUBE_COOKIES_FILE_PATH}")
 
 # ============================================================
 # YORDAMCHI FUNKSIYALAR
@@ -151,193 +92,119 @@ def detect_platform(url: str) -> str:
             return name
     return "Noma'lum manba"
 
-def format_duration(seconds) -> str:
-    if not seconds:
-        return "N/A"
-    seconds = int(seconds)
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
-
-def build_caption(title: str, uploader: str, duration) -> str:
-    uploader_display = uploader if uploader else "Noma'lum"
-    return f"🎬 {title}\n👤 {uploader_display}\n⏱ {format_duration(duration)}"
-
-# ============================================================
-# YOUTUBE FORMATS
-# ============================================================
-
-YOUTUBE_FORMATS = {
-    "360": "bestvideo[height<=360]+bestaudio/best[height<=360]",
-    "480": "bestvideo[height<=480]+bestaudio/best[height<=480]",
-    "720": "bestvideo[height<=720]+bestaudio/best[height<=720]",
-    "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-    "1440": "bestvideo[height<=1440]+bestaudio/best[height<=1440]",
-    "2160": "bestvideo[height<=2160]+bestaudio/best[height<=2160]",
-    "audio": "bestaudio/best",
-}
-
-QUALITY_LABELS = {
-    "360": "360p",
-    "480": "480p",
-    "720": "720p",
-    "1080": "1080p",
-    "1440": "1440p (2K)",
-    "2160": "2160p (4K)",
-    "audio": "🎵 MP3",
-}
-
-FOUR_K_MAX_MB = 1900
-
 def get_max_filesize_mb(quality: str) -> int:
-    if quality == "2160":
-        return FOUR_K_MAX_MB
-    return MAX_FILESIZE_MB
+    return 1900 if quality == "2160" else MAX_FILESIZE_MB
 
-def get_youtube_options(outtmpl: str, quality: str = "720", audio_only: bool = False) -> dict:
-    ydl_opts = {
-        "outtmpl": outtmpl,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "restrictfilenames": True,
-        "extractor_args": YOUTUBE_EXTRACTOR_ARGS,
-        "buffersize": 1024 * 1024,
-        "http_chunk_size": 10 * 1024 * 1024,
-        "http_headers": YOUTUBE_HEADERS,
-        "proxy": "socks5://127.0.0.1:40000",
-        "ignoreerrors": True, # Xatolarni qulatib yubormaslik uchun
+def build_caption(title: str = "Media") -> str:
+    return f"🎬 {title}\n🤖 Media Bot orqali yuklandi"
+
+# ============================================================
+# COBALT API ORQALI YUKLASH (YANGI USUL)
+# ============================================================
+
+def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only: bool = False) -> dict:
+    """Cobalt xizmati orqali video/audio yuklash (IP va bot blokirovkasiz)."""
+    
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
 
-    if audio_only:
-        ydl_opts.update({
-            "format": YOUTUBE_FORMATS["audio"],
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-        })
-    else:
-        ydl_opts.update({
-            "format": YOUTUBE_FORMATS.get(quality, YOUTUBE_FORMATS["720"]),
-            "merge_output_format": "mp4",
-            "max_filesize": get_max_filesize_mb(quality) * 1024 * 1024,
-            "keepvideo": False,
-        })
-    
-    # COOKIES'NI QAYTA ULANISHI (OAuth2 bekor qilingani sababli)
-    if YOUTUBE_COOKIES_FILE_PATH and os.path.exists(YOUTUBE_COOKIES_FILE_PATH):
-        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE_PATH
-        ydl_opts["legacyserverconnect"] = True
-        logger.info("yt-dlp uchun YouTube cookies ishlatilmoqda.")
-    else:
-        logger.warning(f"YOUTUBE_COOKIES_FILE_PATH topilmadi yoki xato: {YOUTUBE_COOKIES_FILE_PATH}")
+    # Sifatni to'g'irlash
+    if quality == "2160": vQuality = "max"
+    elif quality == "1440": vQuality = "1440"
+    elif quality == "1080": vQuality = "1080"
+    elif quality == "480": vQuality = "480"
+    elif quality == "360": vQuality = "360"
+    else: vQuality = "720"
 
-    return ydl_opts
+    payload = {
+        "url": url,
+        "vQuality": vQuality,
+        "filenamePattern": "basic",
+        "isAudioOnly": audio_only or quality == "audio",
+        "aFormat": "mp3",
+    }
 
-# ============================================================
-# MEDIA DOWNLOAD (Video/Rasm)
-# ============================================================
-
-def download_media(url: str, user_id: str, quality: str = "720") -> dict:
-    outtmpl = str(DOWNLOAD_DIR / f"{user_id}_%(id)s.%(ext)s")
-
-    if "youtube.com" in url or "youtu.be" in url:
-        ydl_opts = get_youtube_options(outtmpl=outtmpl, quality=quality, audio_only=False)
-    else:
-        ydl_opts = {
-            "outtmpl": outtmpl,
-            "format": "bestvideo+bestaudio/best",
-            "merge_output_format": "mp4",
-            "max_filesize": MAX_FILESIZE_MB * 1024 * 1024,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "restrictfilenames": True,
-            "buffersize": 1024 * 1024,
-            "http_chunk_size": 10 * 1024 * 1024,
-            "keepvideo": False,
-        }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        logger.info(f"Yuklanmoqda: {url} | Sifat: {quality}")
-        
+    # Bir nechta tayanch serverlarni sinab ko'rish
+    api_response = None
+    for api_url in COBALT_API_URLS:
         try:
-            info = ydl.extract_info(url, download=True)
-            if not info:
-                raise yt_dlp.utils.DownloadError("YouTube kontentni bermadi (IP yoki Cookie blokirovkasi).")
-        except Exception as e:
-            raise yt_dlp.utils.DownloadError(f"Yuklashda xato yuz berdi: {str(e)}")
-
-        filepath = ydl.prepare_filename(info)
-
-        # Kengaytmani to'g'irlash
-        if not os.path.exists(filepath):
-            base = os.path.splitext(filepath)[0]
-            for ext in ("mp4", "mkv", "webm", "jpg", "jpeg", "png", "webp"):
-                candidate = f"{base}.{ext}"
-                if os.path.exists(candidate):
-                    filepath = candidate
+            r = requests.post(api_url, headers=headers, json=payload, timeout=30)
+            if r.status_code == 200:
+                api_response = r.json()
+                if api_response.get("status") in ["stream", "redirect"]:
                     break
+        except Exception as e:
+            logger.warning(f"Cobalt API ({api_url}) xato berdi: {e}")
+            continue
 
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Fayl topilmadi: {filepath}")
+    if not api_response or api_response.get("status") not in ["stream", "redirect"]:
+        raise ValueError(f"Cobalt orqali yuklab bo'lmadi. API javobi: {api_response}")
 
-        ext = os.path.splitext(filepath)[1].lower()
-        media_type = "photo" if ext in (".jpg", ".jpeg", ".png", ".webp") else "video"
+    download_link = api_response.get("url")
+    title = api_response.get("filename", "Media")
+    
+    # Faylni yuklab olish
+    filepath = str(DOWNLOAD_DIR / f"{user_id}_cobalt_{title}")
+    
+    logger.info(f"Fayl yuklanmoqda (Cobalt): {download_link}")
+    
+    dl_req = requests.get(download_link, stream=True, timeout=60)
+    dl_req.raise_for_status()
 
-        return {
-            "path": filepath,
-            "type": media_type,
-            "title": info.get("title") or "Media",
-            "uploader": info.get("uploader") or "Noma'lum",
-            "duration": info.get("duration"),
-        }
+    # Fayl kengaytmasini to'g'irlash
+    content_type = dl_req.headers.get("content-type", "")
+    if "audio" in content_type or audio_only or quality == "audio":
+        media_type = "audio"
+        if not filepath.endswith(".mp3"): filepath += ".mp3"
+    elif "image" in content_type:
+        media_type = "photo"
+        if not filepath.endswith(".jpg"): filepath += ".jpg"
+    else:
+        media_type = "video"
+        if not filepath.endswith(".mp4"): filepath += ".mp4"
+
+    with open(filepath, 'wb') as f:
+        for chunk in dl_req.iter_content(chunk_size=8192):
+            if chunk: f.write(chunk)
+
+    return {
+        "path": filepath,
+        "type": media_type,
+        "title": title,
+    }
+
 
 # ============================================================
-# AUDIO SEARCH
+# AUDIO SEARCH (yt-dlp orqali faqat qidiruv ishlaydi)
 # ============================================================
 
 def download_audio_by_query(query: str, user_id: str) -> dict:
-    outtmpl = str(DOWNLOAD_DIR / f"{user_id}_search_%(id)s.%(ext)s")
-    ydl_opts = get_youtube_options(outtmpl=outtmpl, audio_only=True)
+    """Musiqa nomini qidirib topib, keyin Cobalt orqali yuklaydi."""
+    ydl_opts = {
+        "quiet": True,
+        "extract_flat": True, # Faqat ma'lumot qidiradi, yuklamaydi (Bloklanmaydi)
+        "extractor_args": YOUTUBE_EXTRACTOR_ARGS
+    }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        logger.info(f"YouTube audio qidiruv: {query}")
-        
+        logger.info(f"YouTube qidiruv: {query}")
         try:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
             if not info or ("entries" in info and not info["entries"]):
-                raise yt_dlp.utils.DownloadError("Qidiruv natijasi bo'sh qaytdi.")
+                raise Exception("Qidiruv bo'sh.")
             
-            if "entries" in info and info["entries"]:
-                if info["entries"][0] is not None:
-                    info = info["entries"][0]
-                else:
-                    raise yt_dlp.utils.DownloadError("Topilgan video tafsilotlari shikastlangan.")
+            video_url = info["entries"][0].get("url")
+            if not video_url:
+                raise Exception("Video havolasi topilmadi.")
+                
+            # Topilgan url ni Cobalt ga uzatamiz
+            return download_via_cobalt(video_url, user_id, audio_only=True)
+            
         except Exception as e:
-            raise yt_dlp.utils.DownloadError(f"Audio qidirishda xato: {str(e)}")
-
-        filepath = ydl.prepare_filename(info)
-        base = os.path.splitext(filepath)[0]
-        mp3_path = f"{base}.mp3"
-
-        if os.path.exists(mp3_path):
-            filepath = mp3_path
-
-        if not os.path.exists(filepath):
-            raise FileNotFoundError("Yuklangan MP3 fayl topilmadi.")
-
-        return {
-            "path": filepath,
-            "type": "audio",
-            "title": info.get("title") or "Musiqa",
-            "uploader": info.get("uploader") or "Noma'lum",
-            "duration": info.get("duration"),
-        }
+            raise Exception(f"Audio topishda xato: {str(e)}")
 
 # ============================================================
 # SHAZAM RECOGNITION
@@ -348,72 +215,17 @@ RECOGNITION_CLIP_SECONDS = 25
 def extract_recognition_clip(input_path: str) -> str:
     output_path = f"{input_path}_clip.mp3"
     try:
-        result = subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", input_path,
-                "-t", str(RECOGNITION_CLIP_SECONDS),
-                "-vn", "-acodec", "libmp3lame",
-                "-ar", "44100", "-ac", "2", output_path,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=60,
-        )
-        if result.returncode == 0 and os.path.exists(output_path):
-            return output_path
-    except Exception as e:
-        logger.warning(f"ffmpeg xatosi: {e}")
+        subprocess.run(["ffmpeg", "-y", "-i", input_path, "-t", str(RECOGNITION_CLIP_SECONDS), "-vn", "-acodec", "libmp3lame", "-ar", "44100", "-ac", "2", output_path], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60)
+        if os.path.exists(output_path): return output_path
+    except Exception: pass
     return input_path
 
 async def recognize_song(filepath: str) -> dict | None:
     shazam = Shazam()
     out = await shazam.recognize(filepath)
     track = out.get("track")
-    if not track:
-        return None
-    return {
-        "title": track.get("title", ""),
-        "artist": track.get("subtitle", ""),
-    }
-
-# ============================================================
-# ADMIN & FEEDBACK
-# ============================================================
-
-def get_user_info(update: Update) -> str:
-    user = update.effective_user
-    if not user:
-        return "👤 Noma'lum"
-    full_name = user.full_name or "Noma'lum"
-    username = f"@{user.username}" if user.username else "yo'q"
-    return f"👤 {full_name} | 🔹 {username} | 🆔 {user.id}"
-
-async def send_to_admin(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    if ADMIN_CHAT_ID:
-        try:
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, disable_web_page_preview=True)
-        except Exception as e:
-            logger.exception(f"Adminga yuborishda xato: {e}")
-
-async def notify_admin_about_link(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, platform: str) -> None:
-    user_info = get_user_info(update)
-    await send_to_admin(context, f"🔗 YANGI LINK\n\n{user_info}\n🌐 {platform}\n🔗 {url}")
-
-async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    PENDING_FEEDBACK.add(update.effective_user.id)
-    await update.message.reply_text("✍️ Feedback yozing. Keyingi xabaringiz adminga yuboriladi.")
-
-async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id not in PENDING_FEEDBACK:
-        return
-    feedback = (update.message.text or "").strip()
-    if not feedback:
-        await update.message.reply_text("❌ Xabar bo'sh.")
-        return
-    await send_to_admin(context, f"📩 FEEDBACK\n\n{get_user_info(update)}\n💬 {feedback}")
-    PENDING_FEEDBACK.discard(user_id)
-    await update.message.reply_text("✅ Yuborildi. Rahmat!")
+    if not track: return None
+    return {"title": track.get("title", ""), "artist": track.get("subtitle", "")}
 
 # ============================================================
 # INLINE KEYBOARDS
@@ -437,15 +249,13 @@ async def download_and_send(message, status_msg, url: str, user_id: str, quality
     async with DOWNLOAD_SEMAPHORE:
         await status_msg.edit_text(f"⏳ Yuklanmoqda... Sifat: {QUALITY_LABELS.get(quality, quality)}")
         try:
-            result = await asyncio.to_thread(download_media, url, user_id, quality)
+            result = await asyncio.to_thread(download_via_cobalt, url, user_id, quality)
         except Exception as e:
             logger.error(f"Xato ushlandi: {str(e)}")
             await status_msg.edit_text(f"❌ Yuklab olishda xato yuz berdi:\n\n{str(e)[:150]}")
             return
 
-    if result is None:
-        return
-
+    if result is None: return
     await process_and_send_file(message, status_msg, result, quality)
 
 async def download_and_send_existing(message, status_msg, result: dict) -> None:
@@ -461,7 +271,7 @@ async def process_and_send_file(message, status_msg, result: dict, quality: str)
             await status_msg.edit_text(f"❌ Fayl juda katta: {file_size_mb:.0f} MB (Limit: {limit} MB)")
             return
 
-        caption = build_caption(result["title"], result.get("uploader"), result.get("duration"))
+        caption = build_caption(result["title"])
         await status_msg.edit_text(f"📤 Yuborilmoqda... ({file_size_mb:.1f} MB)")
 
         with open(filepath, "rb") as f:
@@ -472,29 +282,18 @@ async def process_and_send_file(message, status_msg, result: dict, quality: str)
                 await message.reply_photo(photo=input_file, caption=caption)
             elif result["type"] == "audio":
                 await message.reply_chat_action("upload_voice")
-                await message.reply_audio(
-                    audio=input_file, caption=caption, title=result["title"][:64],
-                    performer=(result.get("uploader") or "")[:64], duration=int(result.get("duration") or 0) or None,
-                    write_timeout=1800, read_timeout=1800
-                )
+                await message.reply_audio(audio=input_file, caption=caption, title=result["title"][:64], write_timeout=1800, read_timeout=1800)
             else:
                 await message.reply_chat_action("upload_video")
-                await message.reply_video(
-                    video=input_file, caption=caption, supports_streaming=True,
-                    write_timeout=1800, read_timeout=1800
-                )
+                await message.reply_video(video=input_file, caption=caption, supports_streaming=True, write_timeout=1800, read_timeout=1800)
         await status_msg.delete()
     except Exception as e:
         logger.exception(f"Telegram upload xatosi: {e}")
-        try:
-            await status_msg.edit_text("❌ Yuborishda xatolik yuz berdi.")
-        except Exception:
-            pass
+        try: await status_msg.edit_text("❌ Yuborishda xatolik yuz berdi.")
+        except: pass
     finally:
-        try:
-            os.remove(filepath)
-        except OSError:
-            pass
+        try: os.remove(filepath)
+        except: pass
         gc.collect()
 
 # ============================================================
@@ -515,8 +314,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = str(update.effective_user.id)
     platform = detect_platform(url)
 
-    await notify_admin_about_link(update, context, url, platform)
-
     if platform == "YouTube":
         PENDING_YOUTUBE[user_id] = {"url": url}
         await update.message.reply_text(
@@ -530,7 +327,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         async with DOWNLOAD_SEMAPHORE:
-            result = await asyncio.to_thread(download_media, url, user_id, "720")
+            result = await asyncio.to_thread(download_via_cobalt, url, user_id, "720")
     except Exception as e:
         logger.exception(f"{platform} yuklash xatosi")
         await status_msg.edit_text(f"❌ Yuklashda xato:\n{str(e)[:150]}")
@@ -572,9 +369,6 @@ async def handle_text_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await download_and_send_existing(update.message, status_msg, result)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id in PENDING_FEEDBACK:
-        await handle_feedback(update, context)
-        return
     text = update.message.text or ""
     if URL_PATTERN.search(text):
         await handle_link(update, context)
@@ -589,7 +383,7 @@ def cloud_download_file(file_id: str, dest_path: str) -> None:
     resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile", params={"file_id": file_id}, timeout=30)
     resp.raise_for_status()
     data = resp.json()
-    if not data.get("ok"): raise RuntimeError(f"Telegram getFile xatosi")
+    if not data.get("ok"): raise RuntimeError("Telegram getFile xatosi")
 
     file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{data['result']['file_path']}"
     file_resp = requests.get(file_url, timeout=120)
@@ -644,7 +438,6 @@ async def handle_media_recognition(update: Update, context: ContextTypes.DEFAULT
 # ============================================================
 
 def build_application() -> Application:
-    check_system_dependencies()
     request = HTTPXRequest(connect_timeout=60, read_timeout=1800, write_timeout=1800, pool_timeout=60)
     builder = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request)
 
@@ -658,12 +451,11 @@ def main() -> None:
     app = build_application()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
-    app.add_handler(CommandHandler("feedback", feedback_command))
     app.add_handler(CallbackQueryHandler(youtube_quality_callback, pattern=r"^ytq:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE | filters.Document.AUDIO | filters.Document.VIDEO, handle_media_recognition))
 
-    logger.info("Bot ishga tushmoqda...")
+    logger.info("Bot ishga tushmoqda (Cobalt API bilan)...")
     app.run_polling()
 
 if __name__ == "__main__":
