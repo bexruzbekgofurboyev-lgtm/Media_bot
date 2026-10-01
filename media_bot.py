@@ -104,12 +104,12 @@ def build_caption(title: str = "Media") -> str:
 # ============================================================
 
 def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only: bool = False) -> dict:
-    """Cobalt xizmati orqali video/audio yuklash (IP va bot blokirovkasiz)."""
+    """Cobalt xizmati orqali video/audio yuklash (v10 API formatida)."""
     
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
 
     # Sifatni to'g'irlash (Cobalt v10 API qoidalari)
@@ -120,16 +120,17 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
     elif quality == "360": vQuality = "360"
     else: vQuality = "720"
 
-    # Cobalt v10 uchun to'g'rilangan sodda payload
+    # Cobalt v10 uchun qat'iy va toza payload formati
     payload = {
         "url": url,
         "videoQuality": vQuality,
         "filenamePattern": "basic"
     }
-    
+
+    # API v10 da 'isAudioOnly' yoki 'aFormat' ishlamaydi, o'rniga
+    # 'downloadMode' orqali "audio" ni ko'rsatish talab qilinadi.
     if audio_only or quality == "audio":
-        payload["isAudioOnly"] = True
-        payload["audioFormat"] = "mp3"
+        payload["downloadMode"] = "audio"
 
     # Bir nechta tayanch serverlarni sinab ko'rish
     api_response = None
@@ -153,7 +154,12 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
     
     # Agar picker (bir nechta fayl tanlovi) bo'lsa, birinchisini olish
     if not download_link and api_response.get("status") == "picker":
-        download_link = api_response.get("picker")[0].get("url")
+        picker_items = api_response.get("picker")
+        if picker_items and isinstance(picker_items, list):
+            download_link = picker_items[0].get("url")
+
+    if not download_link:
+        raise ValueError(f"Cobalt download_link qaytarmadi. API javobi: {api_response}")
 
     title = api_response.get("filename", "Media")
     
