@@ -86,22 +86,31 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
         "Content-Type": "application/json"
     }
 
-    # Sifat
-    if quality == "2160": vQuality = "max"
-    elif quality in ["1440", "1080", "720", "480", "360"]: vQuality = quality
-    else: vQuality = "720"
+    # URL dagi ortiqcha parametrlarni (masalan, ?si=...) tozalaymiz, bu Cobalt'ga xalaqit qilishi mumkin
+    clean_url = url.split("?")[0] if "youtube.com/shorts/" in url else url
 
-    payload = {"url": url}
+    payload = {"url": clean_url}
 
     if audio_only or quality == "audio":
         payload["downloadMode"] = "audio"
-        payload["audioFormat"] = "mp3"
+        # Audio uchun qo'shimcha format talablari Cobalt v10 da ba'zan xato berishi mumkin,
+        # shuning uchun faqat 'audio' rejimini o'zini qoldiramiz, u avtomatik eng yaxshisini oladi.
     else:
+        # YouTube uchun sifatlar. "max" o'rniga aniq raqam yoki qat'iy formatlar
+        if quality == "2160": vQuality = "2160"
+        elif quality in ["1440", "1080", "720", "480", "360"]: vQuality = quality
+        else: vQuality = "720"
         payload["videoQuality"] = vQuality
 
     try:
-        logger.info(f"Cobalt so'rovi (API v10): URL={url}, Audio={audio_only}")
+        logger.info(f"Cobalt so'rovi (API v10): URL={clean_url}, Audio={audio_only}, Payload={payload}")
+        # To'g'ridan-to'g'ri root endpoint'ga POST yuboramiz (Cobalt v10 formati)
         r = session.post(f"{COBALT_API_URL}/", headers=headers, json=payload, timeout=30)
+        
+        # Agar xato qaytsa, aynan nima xatoligini to'liq ko'rish uchun:
+        if r.status_code != 200 and r.status_code != 202:
+            logger.error(f"Cobalt 400 xatosi tafsilotlari: {r.text}")
+            
         r.raise_for_status()
         api_response = r.json()
     except Exception as e:
@@ -148,7 +157,6 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
         "type": media_type,
         "title": title,
     }
-
 # ============================================================
 # SOF YOUTUBE SEARCH API (Yt-DLP o'rniga ochiq API)
 # ============================================================
