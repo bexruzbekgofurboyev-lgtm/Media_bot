@@ -38,6 +38,17 @@ PENDING_FEEDBACK = set()
 # O'ZINGIZNING MAHALLIY COBALT SERVERINGIZ
 COBALT_API_URL = "http://127.0.0.1:9000"
 
+PLATFORM_NAMES = {
+    "instagram.com": "Instagram",
+    "youtube.com": "YouTube",
+    "youtu.be": "YouTube",
+    "facebook.com": "Facebook",
+    "fb.watch": "Facebook",
+    "twitter.com": "X (Twitter)",
+    "x.com": "X (Twitter)",
+    "tiktok.com": "TikTok",
+}
+
 QUALITY_LABELS = {
     "360": "360p",
     "480": "480p",
@@ -55,7 +66,7 @@ logger = logging.getLogger(__name__)
 
 # So'rovlar barqarorligi uchun session yaratamiz
 session = requests.Session()
-retries = Retry(total=3, backoff_factor=1, status_forcelist=[ 500, 502, 503, 504 ])
+retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
 session.mount('http://', HTTPAdapter(max_retries=retries))
 session.mount('https://', HTTPAdapter(max_retries=retries))
 
@@ -90,7 +101,6 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
 
     try:
         logger.info(f"Cobalt so'rovi (API v10): URL={url}, Audio={audio_only}")
-        # To'g'ridan-to'g'ri root endpoint'ga POST yuboramiz (Cobalt v10 formati)
         r = session.post(f"{COBALT_API_URL}/", headers=headers, json=payload, timeout=30)
         r.raise_for_status()
         api_response = r.json()
@@ -148,7 +158,6 @@ def download_audio_by_query(query: str, user_id: str) -> dict:
     logger.info(f"Ochiq qidiruv: {query}")
     
     try:
-        # YouTube'ning yashirin ochiq inivious dAPI'laridan biri orqali qidirish (IP bloklanmaydi)
         search_url = f"https://invidious.jing.rocks/api/v1/search?q={requests.utils.quote(query)}&type=video"
         req = session.get(search_url, timeout=20)
         req.raise_for_status()
@@ -157,7 +166,6 @@ def download_audio_by_query(query: str, user_id: str) -> dict:
         if not data or len(data) == 0:
              raise ValueError("Qidiruv natija bermadi.")
              
-        # Eng birinchi videoning ID sini olamiz
         video_id = data[0].get("videoId")
         if not video_id:
              raise ValueError("Topilgan natijada Video ID yo'q.")
@@ -165,7 +173,6 @@ def download_audio_by_query(query: str, user_id: str) -> dict:
         video_url = f"https://www.youtube.com/watch?v={video_id}"
         logger.info(f"Topildi: {video_url}")
         
-        # Topilgan urlni yana o'zimizning Cobalt'ga beramiz
         return download_via_cobalt(video_url, user_id, audio_only=True)
         
     except Exception as e:
@@ -276,7 +283,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     url = URL_PATTERN.search(update.message.text or "").group(0)
     user_id = str(update.effective_user.id)
     
-    # Platformani topamiz, lekin endi hamma ish faqat Cobalt da bo'ladi
     platform = "Media"
     for domain, name in PLATFORM_NAMES.items():
         if domain in url:
