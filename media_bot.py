@@ -50,6 +50,18 @@ QUALITY_LABELS = {
 
 URL_PATTERN = re.compile(r"https?://\S+")
 
+# Platforma nomlarini aniqlash uchun lug'at — handle_link shuni ishlatadi.
+PLATFORM_NAMES = {
+    "instagram.com": "Instagram",
+    "youtube.com": "YouTube",
+    "youtu.be": "YouTube",
+    "facebook.com": "Facebook",
+    "fb.watch": "Facebook",
+    "twitter.com": "X (Twitter)",
+    "x.com": "X (Twitter)",
+    "tiktok.com": "TikTok",
+}
+
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -58,6 +70,14 @@ def get_max_filesize_mb(quality: str) -> int:
 
 def build_caption(title: str = "Media") -> str:
     return f"🎬 {title}\n🤖 Media Bot"
+
+
+def detect_platform(url: str) -> str:
+    """URL manzilidan platforma nomini aniqlaydi (Instagram, YouTube va h.k.)."""
+    for domain, name in PLATFORM_NAMES.items():
+        if domain in url:
+            return name
+    return "Noma'lum manba"
 
 # ============================================================
 # COBALT API ORQALI YUKLASH (Eng toza payload bilan)
