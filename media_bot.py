@@ -1,5 +1,5 @@
 """
-Media Downloader Bot (Cobalt API v10)
+Media Downloader Bot (Sof Cobalt API v10)
 """
 
 import os
@@ -12,7 +12,8 @@ import subprocess
 from pathlib import Path
 from shazamio import Shazam
 import requests
-import yt_dlp
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -35,9 +36,8 @@ PENDING_YOUTUBE = {}
 PENDING_FEEDBACK = set()
 
 # O'ZINGIZNING MAHALLIY COBALT SERVERINGIZ
-COBALT_API_URLS = ["http://127.0.0.1:9000"]
+COBALT_API_URL = "http://127.0.0.1:9000"
 
-# Tugmalardagi matnlar 
 QUALITY_LABELS = {
     "360": "360p",
     "480": "480p",
@@ -50,20 +50,14 @@ QUALITY_LABELS = {
 
 URL_PATTERN = re.compile(r"https?://\S+")
 
-# Platforma nomlarini aniqlash uchun lug'at — handle_link shuni ishlatadi.
-PLATFORM_NAMES = {
-    "instagram.com": "Instagram",
-    "youtube.com": "YouTube",
-    "youtu.be": "YouTube",
-    "facebook.com": "Facebook",
-    "fb.watch": "Facebook",
-    "twitter.com": "X (Twitter)",
-    "x.com": "X (Twitter)",
-    "tiktok.com": "TikTok",
-}
-
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# So'rovlar barqarorligi uchun session yaratamiz
+session = requests.Session()
+retries = Retry(total=3, backoff_factor=1, status_forcelist=[ 500, 502, 503, 504 ])
+session.mount('http://', HTTPAdapter(max_retries=retries))
+session.mount('https://', HTTPAdapter(max_retries=retries))
 
 def get_max_filesize_mb(quality: str) -> int:
     return 1900 if quality == "2160" else MAX_FILESIZE_MB
@@ -71,54 +65,41 @@ def get_max_filesize_mb(quality: str) -> int:
 def build_caption(title: str = "Media") -> str:
     return f"🎬 {title}\n🤖 Media Bot"
 
-
-def detect_platform(url: str) -> str:
-    """URL manzilidan platforma nomini aniqlaydi (Instagram, YouTube va h.k.)."""
-    for domain, name in PLATFORM_NAMES.items():
-        if domain in url:
-            return name
-    return "Noma'lum manba"
-
 # ============================================================
-# COBALT API ORQALI YUKLASH (Eng toza payload bilan)
+# COBALT API ORQALI YUKLASH (Yt-DLP ishtirokisiz)
 # ============================================================
 
 def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only: bool = False) -> dict:
     headers = {
         "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "MediaBot/1.0"
+        "Content-Type": "application/json"
     }
 
-    # Asosiy payload
+    # Sifat
+    if quality == "2160": vQuality = "max"
+    elif quality in ["1440", "1080", "720", "480", "360"]: vQuality = quality
+    else: vQuality = "720"
+
     payload = {"url": url}
 
-    # Agar audio so'ralsa:
     if audio_only or quality == "audio":
         payload["downloadMode"] = "audio"
         payload["audioFormat"] = "mp3"
-    # Sifat faqat YouTube kabi platformalarda ishlaydi
-    elif "youtu" in url:
-        if quality == "2160": payload["videoQuality"] = "max"
-        elif quality in ["1440", "1080", "720", "480", "360"]: payload["videoQuality"] = quality
-        else: payload["videoQuality"] = "720"
+    else:
+        payload["videoQuality"] = vQuality
 
-    api_response = None
-    for api_url in COBALT_API_URLS:
-        try:
-            r = requests.post(api_url, headers=headers, json=payload, timeout=30)
-            if r.status_code in [200, 202]:
-                api_response = r.json()
-                if api_response.get("status") in ["stream", "redirect", "success", "picker"]:
-                    break
-            else:
-                logger.warning(f"Cobalt xato qaytardi ({api_url}): HTTP {r.status_code} - {r.text}")
-        except Exception as e:
-            logger.warning(f"Cobalt ulanishida xato ({api_url}): {e}")
-            continue
+    try:
+        logger.info(f"Cobalt so'rovi (API v10): URL={url}, Audio={audio_only}")
+        # To'g'ridan-to'g'ri root endpoint'ga POST yuboramiz (Cobalt v10 formati)
+        r = session.post(f"{COBALT_API_URL}/", headers=headers, json=payload, timeout=30)
+        r.raise_for_status()
+        api_response = r.json()
+    except Exception as e:
+        logger.error(f"Cobalt API xatosi: {e}")
+        raise ValueError(f"Cobalt xizmatiga ulanib bo'lmadi yoki xato qaytdi: {e}")
 
-    if not api_response or api_response.get("status") not in ["stream", "redirect", "success", "picker"]:
-        raise ValueError(f"Cobalt xato qaytardi: {api_response}")
+    if api_response.get("status") not in ["stream", "redirect", "success", "picker"]:
+        raise ValueError(f"Cobalt API xatosi: {api_response}")
 
     download_link = api_response.get("url")
     if not download_link and api_response.get("status") == "picker":
@@ -127,14 +108,14 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
             download_link = picker_items[0].get("url")
 
     if not download_link:
-        raise ValueError("Cobalt fayl havolasini bermadi.")
+        raise ValueError("Cobalt fayl havolasini qaytarmadi.")
 
     title = api_response.get("filename", "Media")
     filepath = str(DOWNLOAD_DIR / f"{user_id}_cobalt_{title}")
     
-    logger.info(f"Yuklanmoqda: {download_link}")
+    logger.info(f"Fayl tortilmoqda (Cobalt): {download_link[:50]}...")
     
-    dl_req = requests.get(download_link, stream=True, timeout=60)
+    dl_req = session.get(download_link, stream=True, timeout=60)
     dl_req.raise_for_status()
 
     content_type = dl_req.headers.get("content-type", "")
@@ -159,31 +140,36 @@ def download_via_cobalt(url: str, user_id: str, quality: str = "720", audio_only
     }
 
 # ============================================================
-# AUDIO SEARCH
+# SOF YOUTUBE SEARCH API (Yt-DLP o'rniga ochiq API)
 # ============================================================
 
 def download_audio_by_query(query: str, user_id: str) -> dict:
-    ydl_opts = {
-        "quiet": True,
-        "extract_flat": True, 
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}}
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        logger.info(f"YouTube qidiruv: {query}")
-        try:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            if not info or not info.get("entries"):
-                raise Exception("Qidiruv natijasi bo'sh.")
-            
-            video_url = info["entries"][0].get("url")
-            if not video_url:
-                raise Exception("Video havolasi topilmadi.")
-                
-            return download_via_cobalt(video_url, user_id, audio_only=True)
-            
-        except Exception as e:
-            raise Exception(f"Audio topishda xato: {str(e)}")
+    """Matn orqali qidirib, topilgan birinchi videoni Cobaltga beradi."""
+    logger.info(f"Ochiq qidiruv: {query}")
+    
+    try:
+        # YouTube'ning yashirin ochiq inivious dAPI'laridan biri orqali qidirish (IP bloklanmaydi)
+        search_url = f"https://invidious.jing.rocks/api/v1/search?q={requests.utils.quote(query)}&type=video"
+        req = session.get(search_url, timeout=20)
+        req.raise_for_status()
+        data = req.json()
+        
+        if not data or len(data) == 0:
+             raise ValueError("Qidiruv natija bermadi.")
+             
+        # Eng birinchi videoning ID sini olamiz
+        video_id = data[0].get("videoId")
+        if not video_id:
+             raise ValueError("Topilgan natijada Video ID yo'q.")
+             
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        logger.info(f"Topildi: {video_url}")
+        
+        # Topilgan urlni yana o'zimizning Cobalt'ga beramiz
+        return download_via_cobalt(video_url, user_id, audio_only=True)
+        
+    except Exception as e:
+        raise Exception(f"Audio qidirish xatosi: {str(e)}")
 
 # ============================================================
 # SHAZAM RECOGNITION
@@ -289,7 +275,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     url = URL_PATTERN.search(update.message.text or "").group(0)
     user_id = str(update.effective_user.id)
-    platform = detect_platform(url)
+    
+    # Platformani topamiz, lekin endi hamma ish faqat Cobalt da bo'ladi
+    platform = "Media"
+    for domain, name in PLATFORM_NAMES.items():
+        if domain in url:
+            platform = name
+            break
 
     if platform == "YouTube":
         PENDING_YOUTUBE[user_id] = {"url": url}
@@ -432,7 +424,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE | filters.Document.AUDIO | filters.Document.VIDEO, handle_media_recognition))
 
-    logger.info("Bot ishga tushmoqda (Local Cobalt API bilan)...")
+    logger.info("Bot ishga tushmoqda (Sof Cobalt API bilan)...")
     app.run_polling()
 
 if __name__ == "__main__":
