@@ -66,10 +66,14 @@ PLATFORM_NAMES = {
     "tiktok.com": "TikTok",
 }
 
-# COBALT API TAYANCH SERVELARI
+# ============================================================
+# COBALT API TAYANCH SERVERLARI (YANGILANGAN)
+# ============================================================
 COBALT_API_URLS = [
-    "https://api.cobalt.tools/api/json",
-    "https://co.wuk.sh/api/json"
+    "https://api.cobalt.tools",
+    "https://cobalt-api.kwiatekit.com",
+    "https://cobalt.api.timelessnesses.me",
+    "https://cobalt.zorner.me"
 ]
 
 # yt-dlp Qidiruv uchun
@@ -226,6 +230,45 @@ async def recognize_song(filepath: str) -> dict | None:
     track = out.get("track")
     if not track: return None
     return {"title": track.get("title", ""), "artist": track.get("subtitle", "")}
+
+# ============================================================
+# ADMIN & FEEDBACK
+# ============================================================
+
+def get_user_info(update: Update) -> str:
+    user = update.effective_user
+    if not user:
+        return "👤 Noma'lum"
+    full_name = user.full_name or "Noma'lum"
+    username = f"@{user.username}" if user.username else "yo'q"
+    return f"👤 {full_name} | 🔹 {username} | 🆔 {user.id}"
+
+async def send_to_admin(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, disable_web_page_preview=True)
+        except Exception as e:
+            logger.exception(f"Adminga yuborishda xato: {e}")
+
+async def notify_admin_about_link(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, platform: str) -> None:
+    user_info = get_user_info(update)
+    await send_to_admin(context, f"🔗 YANGI LINK\n\n{user_info}\n🌐 {platform}\n🔗 {url}")
+
+async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    PENDING_FEEDBACK.add(update.effective_user.id)
+    await update.message.reply_text("✍️ Feedback yozing. Keyingi xabaringiz adminga yuboriladi.")
+
+async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if user_id not in PENDING_FEEDBACK:
+        return
+    feedback = (update.message.text or "").strip()
+    if not feedback:
+        await update.message.reply_text("❌ Xabar bo'sh.")
+        return
+    await send_to_admin(context, f"📩 FEEDBACK\n\n{get_user_info(update)}\n💬 {feedback}")
+    PENDING_FEEDBACK.discard(user_id)
+    await update.message.reply_text("✅ Yuborildi. Rahmat!")
 
 # ============================================================
 # INLINE KEYBOARDS
